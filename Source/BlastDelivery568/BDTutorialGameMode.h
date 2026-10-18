@@ -72,6 +72,7 @@ private:
     float SuccessDelayStartedAt = 0.f;
     float SlideWidth = 0.f;
     float BlastWatchTime = 0.f;
+    float DeliverySettledFor = 0.f;
     bool bBoxBlasted = false;
     bool bPlayerBlasted = false;
     bool bWasAirborne = false;

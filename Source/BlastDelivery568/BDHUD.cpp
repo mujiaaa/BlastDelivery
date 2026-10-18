@@ -1,4 +1,8 @@
 #include "BDHUD.h"
+#include "BDAlphaSession.h"
+#include "BDCharacter.h"
+#include "BDPlayerController.h"
+#include "EngineUtils.h"
 #include "BDBomb.h"
 #include "BDGameMode.h"
 #include "BDPuzzleActors.h"
@@ -21,6 +25,8 @@ void ABDHUD::Label(const FString& Text, const FVector& Location, const FLinearCo
 void ABDHUD::DrawHUD()
 {
     Super::DrawHUD();
+    // The Alpha's separate Slate overlay owns menus and the minimal HUD.
+    if (GetGameInstance<UBDAlphaSession>()) { DrawAlphaGuides(); return; }
     const auto* Mode = GetWorld()->GetAuthGameMode<ABDGameMode>();
     if (!Canvas || !Mode) return;
     const float S = FMath::Clamp(Canvas->SizeY / 800.f, .65f, 1.5f);
@@ -87,5 +93,71 @@ void ABDHUD::DrawHUD()
         DrawText(Mode->bCompleted?TEXT("DELIVERY COMPLETE!"):TEXT("PAUSED"),Cyan,X+28*S,Y+25*S,GEngine->GetMediumFont(),1.4f*S);
         DrawText(Mode->bCompleted?FString::Printf(TEXT("%d bombs  /  %02d:%02d   -   Press R to replay"),Mode->BombsUsed,Seconds/60,Seconds%60)
             :TEXT("Esc to resume    /    R to restart"),Ink,X+28*S,Y+90*S,GEngine->GetMediumFont(),.8f*S);
+    }
+}
+
+void ABDHUD::WorldLine(const FVector& A, const FVector& B, const FLinearColor& Color, float Width)
+{
+    FVector2D Start,End;
+    auto* PC=GetOwningPlayerController();
+    if (PC && PC->ProjectWorldLocationToScreen(A,Start,true) && PC->ProjectWorldLocationToScreen(B,End,true))
+        DrawLine(Start.X,Start.Y,End.X,End.Y,Color,Width);
+}
+void ABDHUD::DrawAlphaGuides()
+{
+    const auto* Session=GetGameInstance<UBDAlphaSession>();
+    const auto* Mode=GetWorld()->GetAuthGameMode<ABDGameMode>();
+    auto* PC=Cast<ABDPlayerController>(GetOwningPlayerController());
+    if (!Canvas || !Session || !Mode || !Mode->IsPlayground() || !PC
+        || !Session->IsHUDVisible() || Session->GetScreen()!=EBDAlphaScreen::Playing) return;
+    const float Width=FMath::Max(1.f,4.5f*Canvas->SizeX/FMath::Max(1.f,PC->GetViewWidth()));
+    for (TActorIterator<ABDCharacter> PlayerIt(GetWorld());PlayerIt;++PlayerIt)
+    {
+    const auto* Player=*PlayerIt;
+    if (Player->IsRecovering() || Player->IsHidden()) continue;
+    FVector P=Player->GetActorLocation(); P.Z=6.f;
+    const FVector Forward=Player->GetActorForwardVector().GetSafeNormal2D();
+    const FVector Side=FVector::CrossProduct(FVector::UpVector,Forward);
+    const FVector End=P+Forward*200.f;
+    const FLinearColor Mint(.37f,.95f,.85f,.65f);
+    WorldLine(P+Forward*60.f,End,Mint,Width);
+    WorldLine(End,End-Forward*32.f+Side*18.f,Mint,Width);
+    WorldLine(End,End-Forward*32.f-Side*18.f,Mint,Width);
+
+    const ABDBomb* Held=Mode->GetBombForPlayer(Player);
+    if (Held && Held->GetHolder()!=Player) Held=nullptr;
+    if (Held)
+    {
+        const FVector Start=Held->GetActorLocation();
+        const FVector Velocity=Forward*Held->GetProfile().ThrowSpeed*100.f+FVector(0,0,Held->GetProfile().ThrowLift*100.f);
+        FVector Previous=Start;
+        FCollisionQueryParams Query(SCENE_QUERY_STAT(AlphaThrowPreview),false,Held);
+        Query.AddIgnoredActor(Player);
+        for (int32 I=1;I<33;++I)
+        {
+            const float T=I*.04f;
+            FVector Point=Start+Velocity*T+FVector(0,0,GetWorld()->GetGravityZ())*(.5f*T*T);
+            FHitResult Hit;
+            const bool bHit=GetWorld()->LineTraceSingleByChannel(Hit,Previous,Point,ECC_Visibility,Query);
+            if (bHit) Point=Hit.ImpactPoint;
+            WorldLine(Previous,Point,FLinearColor(1.f,.72f,.33f,.6f),Width*.78f);
+            if (bHit) break;
+            Previous=Point;
+        }
+    }
+    }
+    for (TActorIterator<ABDBomb> It(GetWorld());It;++It)
+    {
+        const float Fraction=FMath::Clamp(It->GetRemainingFuse()/FMath::Max(.01f,It->GetProfile().FuseSeconds),0.f,1.f);
+        const float Size=It->GetWorldRadius()/FMath::Max(1.f,It->GetProfile().BombRadius*100.f);
+        const FVector Center=It->GetActorLocation()+FVector(0,0,63.f*Size);
+        FVector Previous=Center+FVector(55.f*Size,0,0);
+        for (int32 I=1;I<=40;++I)
+        {
+            const float Angle=2.f*PI*Fraction*I/40.f;
+            const FVector Point=Center+FVector(FMath::Cos(Angle),FMath::Sin(Angle),0)*55.f*Size;
+            WorldLine(Previous,Point,FLinearColor(1.f,.61f,.17f),Width);
+            Previous=Point;
+        }
     }
 }
