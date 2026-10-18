@@ -1,4 +1,5 @@
 #include "BDTutorialHUD.h"
+#include "BDAlphaSession.h"
 #include "BDBomb.h"
 #include "CanvasItem.h"
 #include "Engine/Canvas.h"
@@ -188,6 +189,8 @@ void ABDTutorialHUD::Instruction(EBDTutorialScene Scene, int32 Index, float Offs
 void ABDTutorialHUD::DrawHUD()
 {
     Super::DrawHUD();
+    if (const auto* Session=GetGameInstance<UBDAlphaSession>())
+        if (Session->GetScreen()!=EBDAlphaScreen::Playing || !Session->IsHUDVisible()) return;
     const auto* Mode = GetWorld()->GetAuthGameMode<ABDTutorialGameMode>();
     if (!Canvas || !Mode) return;
     // Width and height both constrain scaling, including narrow/resized windows.

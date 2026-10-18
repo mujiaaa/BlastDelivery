@@ -11,5 +11,7 @@ class BLASTDELIVERY568_API ABDHUD : public AHUD
 public:
     virtual void DrawHUD() override;
 private:
+    void DrawAlphaGuides();
+    void WorldLine(const FVector& A, const FVector& B, const FLinearColor& Color, float Width);
     void Label(const FString& Text, const FVector& Location, const FLinearColor& Color);
 };

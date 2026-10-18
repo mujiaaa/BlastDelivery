@@ -14,7 +14,7 @@ public class BlastDelivery568 : ModuleRules
 			PrivateDependencyModuleNames.AddRange(new string[] { "UnrealEd" });
 		}
 
-		PrivateDependencyModuleNames.AddRange(new string[] { "RenderCore" });
+		PrivateDependencyModuleNames.AddRange(new string[] { "RenderCore", "Slate", "SlateCore", "ApplicationCore" });
 
 		// Uncomment if you are using Slate UI
 		// PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore" });

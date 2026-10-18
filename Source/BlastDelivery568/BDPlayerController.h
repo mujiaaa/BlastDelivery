@@ -6,6 +6,8 @@
 
 class ACameraActor;
 class ABDCharacter;
+class SWidget;
+class UBDLocalMultiplayer;
 
 UCLASS()
 class BLASTDELIVERY568_API ABDPlayerController : public APlayerController
@@ -16,14 +18,18 @@ public:
     virtual void BeginPlay() override;
     virtual void SetupInputComponent() override;
     virtual void PlayerTick(float DeltaSeconds) override;
+    virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
     void TogglePause();
     void Restart();
     void PressBomb();
     void ReleaseBomb();
     void ThrowBomb();
     void SetTutorialView(const FVector& Center);
+    void SetPlaygroundView(const FVector& Center, float Width, float Height);
+    void RefreshAlphaInput();
     float GetViewWidth() const;
     void ResetBombInput();
+    UBDLocalMultiplayer* GetLocalMultiplayer() const { return LocalMultiplayer; }
 private:
     bool CanUseGameplayInput() const;
     void UpdateCameraFraming();
@@ -35,5 +41,13 @@ private:
     UPROPERTY(EditDefaultsOnly, Category="Camera") float MinimumViewWidth = 2600.f;
     UPROPERTY(EditDefaultsOnly, Category="Camera") float MinimumViewHeight = 2350.f;
     UPROPERTY() TObjectPtr<ACameraActor> RoomCamera;
+    UPROPERTY() TObjectPtr<UBDLocalMultiplayer> LocalMultiplayer;
     bool bBombButtonDown = false;
+    bool bLeftBombButtonDown = false;
+    void LeftPressed();
+    void LeftReleased();
+    void ToggleHUD();
+    void GamepadBack();
+    TSharedPtr<SWidget> AlphaWidget;
+    TSharedPtr<SWidget> ViewportWidget;
 };

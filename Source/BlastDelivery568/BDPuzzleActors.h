@@ -7,6 +7,9 @@
 class UBoxComponent;
 class UStaticMeshComponent;
 class ABDCrate;
+class UInstancedStaticMeshComponent;
+class UPointLightComponent;
+class UMaterialInstanceDynamic;
 
 UCLASS()
 class BLASTDELIVERY568_API ABDBarrier : public AActor
@@ -54,13 +57,14 @@ public:
     virtual void OnConstruction(const FTransform& Transform) override;
     bool ContainsSettledCrate(const ABDCrate* Crate) const;
     bool ContainsCrate(const ABDCrate* Crate) const;
+    virtual void Tick(float DeltaSeconds) override;
     UPROPERTY(EditAnywhere, Category="Goal") FVector Extent = FVector(180,180,100);
-    UPROPERTY(EditAnywhere, Category="Goal") float MaxSettledSpeed = 3.f;
+    UPROPERTY(EditAnywhere, Category="Goal") float MaxSettledSpeed = 25.f;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UBoxComponent> Region;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UStaticMeshComponent> Mesh;
 };
 
-// Brief, simple expanding ring built from the engine sphere; no particle assets.
+// Unity's short floor-level blast pulse, independent of physical blast forces.
 UCLASS()
 class BLASTDELIVERY568_API ABDBlastFlash : public AActor
 {
@@ -69,7 +73,13 @@ public:
     ABDBlastFlash();
     virtual void BeginPlay() override;
     virtual void Tick(float DeltaSeconds) override;
+    void Configure(float RadiusCentimetres,float FloorHeightCentimetres=0.f);
 private:
-    UPROPERTY() TObjectPtr<UStaticMeshComponent> Mesh;
+    UPROPERTY() TObjectPtr<UInstancedStaticMeshComponent> Ring;
+    UPROPERTY() TObjectPtr<UPointLightComponent> Flash;
+    UPROPERTY() TObjectPtr<UMaterialInstanceDynamic> RingMaterial;
     float Age = 0.f;
+    float Radius = 360.f;
+    float FloorHeight = 0.f;
+    void UpdatePresentation();
 };

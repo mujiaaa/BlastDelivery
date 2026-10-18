@@ -9,6 +9,7 @@
 #include "../BDBomb.h"
 #include "../BDCrate.h"
 #include "../BDPuzzleActors.h"
+#include "../BDAlphaSession.h"
 #include "Components/StaticMeshComponent.h"
 #include "EngineUtils.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -39,6 +40,7 @@ struct FFixture
     float SavedFuse = 0;
     FVector SavedPosition;
     TWeakObjectPtr<ABDCrate> PreviousCrate;
+    bool bRetreatBraking = false;
     bool bFailed = false;
     void Refresh()
     {
@@ -68,6 +70,40 @@ struct FFixture
         Player->GetCharacterMovement()->StopMovementImmediately();
         Player->SetActorLocation(Mode->GetSceneOrigin()+Local,false,nullptr,ETeleportType::TeleportPhysics);
         Player->GetCharacterMovement()->SetMovementMode(MOVE_Falling);
+    }
+    void SetFuse(float Seconds)
+    {
+        FBDPhysicsSettings Settings=Mode->GetPhysicsSettings();
+        Settings.FuseSeconds=Seconds;
+        Test->TestTrue(TEXT("Physics profile update accepted"),Mode->ApplyPhysicsSettings(Settings));
+    }
+    void RestartSceneSequence()
+    {
+        // Test the five-stage state machine directly; session Replay intentionally reloads the map.
+        if (auto* Session=World->GetGameInstance<UBDAlphaSession>()) Session->SetScreen(EBDAlphaScreen::Playing);
+        Mode->RestartTutorial();
+    }
+    void DescribeScene(const TCHAR* Label)
+    {
+        if (!Mode || !Player) return;
+        const FVector Origin=Mode->GetSceneOrigin();
+        Test->AddInfo(FString::Printf(TEXT("%s: Scene=%d Phase=%d Origin=%s PlayerLocal=%s PlayerVelocity=%s BombLocal=%s"),
+            Label,Mode->SceneIndex,int32(Mode->Phase),*Origin.ToString(),
+            *(Player->GetActorLocation()-Origin).ToString(),*Player->GetVelocity().ToString(),
+            IsValid(Mode->ActiveBomb) ? *(Mode->ActiveBomb->GetActorLocation()-Origin).ToString() : TEXT("none")));
+        if (IsValid(Mode->Crate))
+        {
+            FVector Center, Extent;
+            Mode->Crate->GetActorBounds(false,Center,Extent);
+            Test->AddInfo(FString::Printf(TEXT("Crate=%s Local=%s Velocity=%s AngularVelocity=%s BoundsCenterLocal=%s BoundsExtent=%s OriginalCrate=%d"),
+                *Mode->Crate->GetName(),*(Mode->Crate->GetActorLocation()-Origin).ToString(),
+                *Mode->Crate->Mesh->GetPhysicsLinearVelocity().ToString(),
+                *Mode->Crate->Mesh->GetPhysicsAngularVelocityInRadians().ToString(),
+                *(Center-Origin).ToString(),*Extent.ToString(),Mode->Crate==PreviousCrate.Get()));
+        }
+        if (IsValid(Mode->Goal)) Test->AddInfo(FString::Printf(TEXT("GoalLocal=%s Extent=%s Contains=%d Settled=%d"),
+            *(Mode->Goal->GetActorLocation()-Origin).ToString(),*Mode->Goal->Extent.ToString(),
+            Mode->Goal->ContainsCrate(Mode->Crate),Mode->Goal->ContainsSettledCrate(Mode->Crate)));
     }
     void Shot(const TCHAR* Name)
     {
@@ -123,9 +159,7 @@ public:
         if (FPlatformTime::Seconds()-Started > 15.)
         {
             F->Test->AddError(TEXT("Timed out: ")+Name);
-            if (F->Mode && F->Player) F->Test->AddInfo(FString::Printf(TEXT("Scene=%d Phase=%d Player=%s Bomb=%s"),
-                F->Mode->SceneIndex,int32(F->Mode->Phase),*F->Player->GetActorLocation().ToString(),
-                F->Mode->ActiveBomb ? *F->Mode->ActiveBomb->GetActorLocation().ToString() : TEXT("none")));
+            F->DescribeScene(TEXT("Timeout"));
             F->bFailed = true;
             return true;
         }
@@ -178,7 +212,9 @@ bool FBDFiveSceneTest::RunTest(const FString& Parameters)
         });
         Step(TEXT("Slide begins 0.5 seconds after explosion and blocks gameplay input"),{},[Index](FFixture& X)
         {
-            if (X.Mode->Phase != EBDTutorialPhase::Sliding || X.Mode->GetSlideAlpha()<.35f) return false;
+            // Observe the transition as soon as it starts; waiting for a screenshot
+            // fraction can miss this short phase when an offscreen render hitches.
+            if (X.Mode->Phase != EBDTutorialPhase::Sliding) return false;
             X.Test->TestTrue(TEXT("Post-explosion delay respected"),X.World->GetTimeSeconds()-X.WorldMark >= .5f);
             X.Test->TestEqual(TEXT("Sliding from the correct scene"),X.Mode->SceneIndex,Index);
             X.Test->TestFalse(TEXT("Input disabled"),X.Mode->IsGameplayInputAllowed());
@@ -193,6 +229,11 @@ bool FBDFiveSceneTest::RunTest(const FString& Parameters)
     Step(TEXT("Scene one is a clean playable ground with the wordless HUD"),[](FFixture& X)
     {
         X.World->GetGameViewport()->GetGameViewport()->SetFixedViewportSize(1280,800);
+        if (auto* Session=X.World->GetGameInstance<UBDAlphaSession>())
+        {
+            Session->SetSimpleControls(true);
+            Session->SetScreen(EBDAlphaScreen::Playing);
+        }
     },[](FFixture& X)
     {
         if (!X.After(.6)) return false;
@@ -203,18 +244,31 @@ bool FBDFiveSceneTest::RunTest(const FString& Parameters)
         X.Test->TestNull(TEXT("No crate"),X.Mode->Crate.Get());
         X.Test->TestNull(TEXT("No goal"),X.Mode->Goal.Get());
         X.Test->TestTrue(TEXT("Wordless HUD selected"),X.PC->GetHUD()->IsA<ABDTutorialHUD>());
+        X.Test->TestEqual(TEXT("Shared Alpha fuse is four seconds"),X.Mode->GetPhysicsSettings().FuseSeconds,4.f);
         X.Shot(TEXT("01-throw.png"));
         return true;
     });
-    Step(TEXT("LMB alone draws and throws once"),[](FFixture& X)
+    Step(TEXT("Simple LMB press holds without throwing or completing the lesson"),[](FFixture& X)
     {
         X.Aim(FVector(500,0,0));
         X.Key(EKeys::LeftMouseButton,IE_Pressed);
+    },[](FFixture& X)
+    {
+        if (!X.After(.2)) return false;
+        X.Test->TestTrue(TEXT("Left button keeps the bomb held"),X.Mode->ActiveBomb && X.Mode->ActiveBomb->IsHeld());
+        X.Test->TestEqual(TEXT("Pressing alone does not complete throw"),X.Mode->Phase,EBDTutorialPhase::Playing);
+        X.Test->TestEqual(TEXT("Only one bomb created while held"),X.Mode->BombsUsed,1);
+        return true;
+    });
+    Step(TEXT("Simple LMB release throws the same burning bomb"),[](FFixture& X)
+    {
+        X.SavedFuse=X.Mode->ActiveBomb ? X.Mode->ActiveBomb->GetRemainingFuse() : 0.f;
         X.Key(EKeys::LeftMouseButton,IE_Released);
         X.WorldMark = X.World->GetTimeSeconds();
         X.Test->TestEqual(TEXT("One successful throw"),X.Mode->BombsUsed,1);
         X.Test->TestTrue(TEXT("Success follows valid throw"),X.Mode->Phase == EBDTutorialPhase::Success);
         X.Test->TestTrue(TEXT("Bomb is in flight"),X.Mode->ActiveBomb && !X.Mode->ActiveBomb->IsHeld());
+        if (X.Mode->ActiveBomb) X.Test->TestTrue(TEXT("Release preserves remaining fuse"),X.Mode->ActiveBomb->GetRemainingFuse()<=X.SavedFuse);
         if (X.Mode->ActiveBomb) X.ExpectedExplosionAt = X.WorldMark+X.Mode->ActiveBomb->GetRemainingFuse();
         X.Key(EKeys::RightMouseButton,IE_Pressed);
         X.Test->TestEqual(TEXT("Feedback blocks additional input"),X.Mode->BombsUsed,1);
@@ -248,7 +302,7 @@ bool FBDFiveSceneTest::RunTest(const FString& Parameters)
     {
         if (X.Mode->Crate==X.PreviousCrate.Get() || !X.After(.3)) return false;
         X.Test->TestEqual(TEXT("Exactly one fresh crate"),X.Count<ABDCrate>(),1);
-        X.Test->TestTrue(TEXT("Crate reset to start"),FVector::Dist2D(X.Mode->Crate->GetActorLocation(),X.Mode->GetSceneOrigin()+FVector(150,0,53))<1);
+        X.Test->TestTrue(TEXT("Crate reset to start"),FVector::Dist2D(X.Mode->Crate->GetActorLocation(),X.Mode->GetSceneOrigin()+FVector(150,0,63))<1);
         X.Aim(FVector(500,0,0));
         X.Key(EKeys::LeftMouseButton,IE_Pressed);
         X.Key(EKeys::LeftMouseButton,IE_Released);
@@ -286,6 +340,7 @@ bool FBDFiveSceneTest::RunTest(const FString& Parameters)
         X.Test->TestEqual(TEXT("Paused fuse"),X.Mode->ActiveBomb->GetRemainingFuse(),X.SavedFuse);
         X.Key(EKeys::RightMouseButton,IE_Released);
         X.PC->TogglePause();
+        X.PC->PlayerTick(1.f/120.f);
         X.Test->TestEqual(TEXT("Grounded put-down immediately shows success"),X.Mode->Phase,EBDTutorialPhase::Success);
         return true;
     });
@@ -306,14 +361,14 @@ bool FBDFiveSceneTest::RunTest(const FString& Parameters)
         FHitResult Hit;
         const FVector O = X.Mode->GetSceneOrigin();
         X.Test->TestFalse(TEXT("No hidden floor in gap"),X.World->LineTraceSingleByChannel(Hit,O+FVector(0,0,20),O-FVector(0,0,250),ECC_Visibility));
-        X.PlacePlayer(FVector(0,0,-360));
+        X.PlacePlayer(FVector(0,0,X.Mode->GetPhysicsSettings().FallKillHeight*100.f-100.f));
         return true;
     });
     Step(TEXT("Fall rebuilds same stage without credit"),{},[](FFixture& X)
     {
         if (!X.After(.4)) return false;
         X.Test->TestEqual(TEXT("Stage retained after fall"),X.Mode->SceneIndex,3);
-        X.Test->TestTrue(TEXT("Player restored"),FVector::Dist2D(X.Player->GetActorLocation(),X.Mode->GetSceneOrigin()+FVector(-330,0,66))<1);
+        X.Test->TestTrue(TEXT("Player restored"),FVector::Dist2D(X.Player->GetActorLocation(),X.Mode->GetSceneOrigin()+FVector(-330,0,93))<1);
         X.Test->TestNull(TEXT("No stale bomb"),X.Mode->ActiveBomb.Get());
         X.Aim(FVector(500,0,0));
         X.Key(EKeys::RightMouseButton,IE_Pressed);
@@ -343,16 +398,50 @@ bool FBDFiveSceneTest::RunTest(const FString& Parameters)
     {
         if (X.Player->GetActorLocation().X-X.Mode->GetSceneOrigin().X<200 || !X.Player->GetCharacterMovement()->IsMovingOnGround()) return false;
         X.Key(EKeys::RightMouseButton,IE_Released);
-        // Place a bomb at the landing position, behind the crate. The crate is never
-        // teleported on this delivery route; it reaches the goal through real impulses.
+        // The cursor used for the jump is behind the player after landing. Aim again
+        // before pressing: the input callback correctly derives facing from that cursor.
+        X.Aim(FVector(500,0,0));
+        X.PreviousCrate=X.Mode->Crate;
         X.Key(EKeys::RightMouseButton,IE_Pressed);
         X.Key(EKeys::RightMouseButton,IE_Released);
+        ABDBomb* Bomb=X.Mode->ActiveBomb;
+        if (!X.Test->TestNotNull(TEXT("Delivery uses a real dropped bomb"),Bomb))
+        {
+            X.bFailed=true;
+            return true;
+        }
+        X.Test->TestFalse(TEXT("Delivery bomb is released"),Bomb->IsHeld());
+        X.Test->TestTrue(TEXT("Bomb lies between the player and the original crate"),
+            Bomb->GetActorLocation().X>X.Player->GetActorLocation().X &&
+            Bomb->GetActorLocation().X<X.Mode->Crate->GetActorLocation().X);
+        X.Test->TestTrue(TEXT("Original crate is inside the delivery blast radius"),
+            FVector::Dist(Bomb->GetActorLocation(),X.Mode->Crate->GetActorLocation())<Bomb->GetProfile().BlastRadius*100.f);
+        X.bRetreatBraking=false;
+        X.DescribeScene(TEXT("Delivery bomb placed"));
+        return true;
+    });
+    Step(TEXT("Walk aside on the landing platform before the delivery fuse expires"),{},[](FFixture& X)
+    {
+        // A normal walking input moves aside; neither the player nor crate is
+        // teleported. Reduce speed so braking stays comfortably inside the platform.
+        const float LocalY=X.Player->GetActorLocation().Y-X.Mode->GetSceneOrigin().Y;
+        X.bRetreatBraking|=LocalY>=330.f;
+        X.Player->MoveInRoom(FVector2D(0,X.bRetreatBraking ? 0.f : .4f));
+        if (!X.bRetreatBraking || X.Player->GetVelocity().Size2D()>5.f) return false;
+        X.Test->TestTrue(TEXT("Player remains on landing ground"),X.Player->GetCharacterMovement()->IsMovingOnGround());
+        X.Test->TestTrue(TEXT("Player is clear of the pit and platform edge"),
+            X.Player->GetActorLocation().X-X.Mode->GetSceneOrigin().X>220.f && FMath::Abs(LocalY)<400.f);
+        X.Test->TestNotNull(TEXT("Retreat finishes before the natural fuse expires"),X.Mode->ActiveBomb.Get());
+        X.DescribeScene(TEXT("Delivery player safely aside"));
         return true;
     });
     Step(TEXT("Explosion delivers original box wholly inside the goal"),{},[](FFixture& X)
     {
         if (X.Mode->Phase!=EBDTutorialPhase::Success) return false;
+        X.Test->TestTrue(TEXT("Delivery uses the original crate without a scene reset"),X.Mode->Crate==X.PreviousCrate.Get());
         X.Test->TestTrue(TEXT("Full containment"),X.Mode->Goal->ContainsCrate(X.Mode->Crate));
+        X.Test->TestTrue(TEXT("Crate settled before success"),X.Mode->Goal->ContainsSettledCrate(X.Mode->Crate));
+        X.DescribeScene(TEXT("Delivery complete"));
         return true;
     });
     Step(TEXT("Final success stays on scene five and freezes input"),{},[](FFixture& X)
@@ -363,7 +452,7 @@ bool FBDFiveSceneTest::RunTest(const FString& Parameters)
         X.Shot(TEXT("08-complete.png"));
         return true;
     });
-    Step(TEXT("Restart after completion clears all previous state"),[](FFixture& X){ X.PC->Restart(); },[](FFixture& X)
+    Step(TEXT("Restart after completion clears all previous state"),[](FFixture& X){ X.RestartSceneSequence(); },[](FFixture& X)
     {
         if (!X.After(.3)) return false;
         X.Test->TestEqual(TEXT("Back to first scene"),X.Mode->SceneIndex,0);
@@ -376,19 +465,19 @@ bool FBDFiveSceneTest::RunTest(const FString& Parameters)
     });
     Step(TEXT("Restart while waiting for a bomb cancels the old transition"),[](FFixture& X)
     {
-        X.SavedFuse = X.Mode->FuseSeconds;
-        X.Mode->FuseSeconds = .25f;
+        X.SavedFuse = X.Mode->GetPhysicsSettings().FuseSeconds;
+        X.SetFuse(.25f);
         X.Key(EKeys::LeftMouseButton,IE_Pressed);
         X.Key(EKeys::LeftMouseButton,IE_Released);
         X.Test->TestEqual(TEXT("Waiting with success feedback"),X.Mode->Phase,EBDTutorialPhase::Success);
-        X.PC->Restart();
+        X.RestartSceneSequence();
     },[](FFixture& X)
     {
         if (!X.After(.9)) return false;
         X.Test->TestEqual(TEXT("No stale transition after restart"),X.Mode->SceneIndex,0);
         X.Test->TestEqual(TEXT("Restart remains playable"),X.Mode->Phase,EBDTutorialPhase::Playing);
         X.Test->TestNull(TEXT("Old observed bomb removed"),X.Mode->ActiveBomb.Get());
-        X.Mode->FuseSeconds = X.SavedFuse;
+        X.SetFuse(X.SavedFuse);
         return true;
     });
     Step(TEXT("Unexpected bomb removal retries the scene instead of impersonating an explosion"),[](FFixture& X)

@@ -6,6 +6,7 @@
 #include "BDPlayerController.h"
 #include "BDPuzzleActors.h"
 #include "BDVisuals.h"
+#include "BDAlphaSession.h"
 #include "Components/BoxComponent.h"
 #include "Components/AudioComponent.h"
 #include "Engine/StaticMeshActor.h"
@@ -80,7 +81,7 @@ void ABDTutorialGameMode::BuildStage(FBDTutorialStage& Stage, EBDTutorialScene S
 
     if (Scene == EBDTutorialScene::MoveBox || Scene == EBDTutorialScene::Deliver)
     {
-        Stage.Box = GetWorld()->SpawnActor<ABDCrate>(Origin+FVector(Scene == EBDTutorialScene::Deliver ? 550 : 150,0,53),FRotator::ZeroRotator,Params);
+        Stage.Box = GetWorld()->SpawnActor<ABDCrate>(Origin+FVector(Scene == EBDTutorialScene::Deliver ? 550 : 150,0,63),FRotator::ZeroRotator,Params);
         Stage.Actors.Add(Stage.Box);
     }
     if (Scene == EBDTutorialScene::Deliver)
@@ -90,7 +91,7 @@ void ABDTutorialGameMode::BuildStage(FBDTutorialStage& Stage, EBDTutorialScene S
         Stage.DeliveryGoal->OnConstruction(Stage.DeliveryGoal->GetActorTransform());
         Stage.Actors.Add(Stage.DeliveryGoal);
     }
-    const FVector Start(bGap ? -330 : -450,0,66);
+    const FVector Start(bGap ? -330 : -450,0,93);
     Stage.Player = GetWorld()->SpawnActor<ABDCharacter>(Origin+Start,FRotator::ZeroRotator,Params);
     Stage.Actors.Add(Stage.Player);
     FreezeStage(Stage);
@@ -137,7 +138,7 @@ void ABDTutorialGameMode::ActivateStage()
     SuccessBomb.Reset();
     bWaitingForSuccessBomb = false;
     SuccessDelayStartedAt = 0.f;
-    BlastWatchTime = PhaseTime = 0.f;
+    DeliverySettledFor = BlastWatchTime = PhaseTime = 0.f;
     Phase = EBDTutorialPhase::Playing;
     BoxStart = Crate ? Crate->GetActorLocation() : FVector::ZeroVector;
     if (Crate)
@@ -232,7 +233,7 @@ void ABDTutorialGameMode::Tick(float DeltaSeconds)
             FCollisionQueryParams Query(SCENE_QUERY_STAT(TutorialBombFloor),false,PlacedBomb.Get());
             Query.AddIgnoredActor(Current.Player);
             const FVector P = PlacedBomb->GetActorLocation();
-            if (GetWorld()->LineTraceSingleByChannel(Hit,P,P-FVector(0,0,24),ECC_Visibility,Query)
+            if (GetWorld()->LineTraceSingleByChannel(Hit,P,P-FVector(0,0,PlacedBomb->GetWorldRadius()+8.f),ECC_Visibility,Query)
                 && Current.Actors.Contains(Hit.GetActor()) && Hit.ImpactNormal.Z > .9f)
                 MarkSuccess(PlacedBomb.Get());
         }
@@ -246,7 +247,8 @@ void ABDTutorialGameMode::Tick(float DeltaSeconds)
         break;
     }
     case EBDTutorialScene::Deliver:
-        if (Goal && Goal->ContainsCrate(Crate)) MarkSuccess();
+        DeliverySettledFor = Goal && Goal->ContainsSettledCrate(Crate) ? DeliverySettledFor+DeltaSeconds : 0.f;
+        if (DeliverySettledFor >= GetPhysicsSettings().GoalSettleSeconds) MarkSuccess();
         break;
     default: break;
     }
@@ -291,8 +293,13 @@ bool ABDTutorialGameMode::RequestSceneReset()
 FVector ABDTutorialGameMode::GetHeldBlastVelocity(const ABDCharacter* Player) const
 {
     const bool bGap = GetScene() == EBDTutorialScene::CrossGap || GetScene() == EBDTutorialScene::Deliver;
-    if (bAssistGapJump && bGap && Player->GetActorLocation().X < Current.Origin.X-180.f)
-        return FVector(JumpHorizontalSpeed,0,JumpVerticalSpeed);
+    const auto* Session=GetGameInstance<UBDAlphaSession>();
+    const bool bAssist=Session ? Session->GetFeature(TEXT("tutorialAssist")) : bAssistGapJump;
+    if (bAssist && bGap && Player->GetActorLocation().X < Current.Origin.X-180.f)
+    {
+        const FVector Normal=Super::GetHeldBlastVelocity(Player);
+        return FVector(Normal.Size2D(),0,Normal.Z);
+    }
     return Super::GetHeldBlastVelocity(Player);
 }
 
