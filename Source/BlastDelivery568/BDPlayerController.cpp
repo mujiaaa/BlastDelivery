@@ -165,3 +165,10 @@ float ABDPlayerController::GetViewWidth() const
 {
     return RoomCamera ? RoomCamera->GetCameraComponent()->OrthoWidth : 3000.f;
 }
+void ABDPlayerController::SetRoomView(const FVector& Center, float Width, float Height)
+{
+    SetTutorialView(Center);
+    MinimumViewWidth = Width;
+    MinimumViewHeight = Height;
+    UpdateCameraFraming();
+}

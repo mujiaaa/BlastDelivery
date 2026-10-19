@@ -14,12 +14,12 @@ public:
     ABDCharacter();
     virtual void BeginPlay() override;
     virtual void Tick(float DeltaSeconds) override;
-    void MoveInRoom(const FVector2D& Input);
-    void FacePoint(const FVector& Point);
+    virtual void MoveInRoom(const FVector2D& Input);
+    virtual void FacePoint(const FVector& Point);
     void DrawBomb();
     void DropBomb();
     void ThrowBomb();
-    void Respawn();
+    virtual void Respawn();
     FVector GetBombPosition() const;
     FVector GetSpawnPosition() const { return SpawnTransform.GetLocation(); }
     UPROPERTY(EditAnywhere, Category="Movement") float WalkSpeed = 330.f;

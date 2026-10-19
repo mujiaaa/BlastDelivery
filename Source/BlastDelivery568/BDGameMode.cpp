@@ -48,6 +48,7 @@ ABDBomb* ABDGameMode::DrawBomb(ABDCharacter* Holder)
     if (ActiveBomb)
     {
         ActiveBomb->Ignite(Holder, FuseSeconds);
+        PrepareBomb(ActiveBomb, Holder);
         ++BombsUsed;
     }
     return ActiveBomb;
@@ -55,6 +56,10 @@ ABDBomb* ABDGameMode::DrawBomb(ABDCharacter* Holder)
 void ABDGameMode::ClearBomb(ABDBomb* Bomb)
 {
     if (ActiveBomb == Bomb) ActiveBomb = nullptr;
+}
+void ABDGameMode::ResolveBombExplosion(const FVector& Position, ABDCharacter* Holder, ABDBomb* Bomb)
+{
+    ExplodeAt(Position, Holder, Bomb);
 }
 bool ABDGameMode::HasBlastLineOfSight(const FVector& From, AActor* Target, AActor* Bomb) const
 {
@@ -121,7 +126,7 @@ void ABDGameMode::RestartTutorial()
 void ABDGameMode::CompleteTutorial()
 {
     bCompleted = true;
-    if (IsValid(ActiveBomb)) ActiveBomb->Destroy();
+    if (IsValid(ActiveBomb) && !ActiveBomb->IsBanana()) ActiveBomb->Destroy();
     if (auto* Player = Cast<ABDCharacter>(UGameplayStatics::GetPlayerPawn(this, 0)))
         Player->GetCharacterMovement()->StopMovementImmediately();
 }

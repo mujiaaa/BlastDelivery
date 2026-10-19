@@ -23,6 +23,13 @@ public:
     void Nudge(const FVector& Direction);
     void Explode();
     bool IsHeld() const { return Holder.IsValid(); }
+    ABDCharacter* GetHolder() const { return Holder.Get(); }
+    void MakeBanana();
+    bool IsBanana() const { return bBanana; }
+    bool IsRestingBanana() const;
+    bool PickUpBanana(ABDCharacter* Eater);
+    bool IsBeingEaten() const { return Consumer.IsValid(); }
+    ABDCharacter* GetConsumer() const { return Consumer.Get(); }
     float GetRemainingFuse() const { return RemainingFuse; }
     UPROPERTY(VisibleAnywhere) TObjectPtr<USphereComponent> Collision;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UStaticMeshComponent> Mesh;
@@ -30,6 +37,8 @@ public:
     UPROPERTY(VisibleAnywhere) TObjectPtr<UProjectileMovementComponent> Movement;
 private:
     TWeakObjectPtr<ABDCharacter> Holder;
+    TWeakObjectPtr<ABDCharacter> Consumer;
     float RemainingFuse = 2.5f;
     bool bExploded = false;
+    bool bBanana = false;
 };

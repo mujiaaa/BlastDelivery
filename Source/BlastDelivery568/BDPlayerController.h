@@ -22,6 +22,7 @@ public:
     void ReleaseBomb();
     void ThrowBomb();
     void SetTutorialView(const FVector& Center);
+    void SetRoomView(const FVector& Center, float Width, float Height);
     float GetViewWidth() const;
     void ResetBombInput();
 private:

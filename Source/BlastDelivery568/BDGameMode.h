@@ -37,6 +37,8 @@ public:
     UPROPERTY(BlueprintReadOnly, Category="Run") TObjectPtr<ABDBomb> ActiveBomb;
 
     ABDBomb* DrawBomb(ABDCharacter* Holder);
+    virtual void PrepareBomb(ABDBomb* Bomb, ABDCharacter* Holder) {}
+    virtual void ResolveBombExplosion(const FVector& Position, ABDCharacter* Holder, ABDBomb* Bomb);
     void ClearBomb(ABDBomb* Bomb);
     void ExplodeAt(const FVector& Position, ABDCharacter* Holder, AActor* Bomb);
     virtual void RestartTutorial();
