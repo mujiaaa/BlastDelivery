@@ -9,7 +9,7 @@
 
 namespace
 {
-const FLinearColor Ink = FLinearColor::FromSRGBColor(FColor(6, 13, 18));
+const FLinearColor ResultInk = FLinearColor::FromSRGBColor(FColor(6, 13, 18));
 const FLinearColor Teal = FLinearColor::FromSRGBColor(FColor(14, 59, 69));
 const FLinearColor Cream = FLinearColor::FromSRGBColor(FColor(255, 227, 168));
 const FLinearColor Mint = FLinearColor::FromSRGBColor(FColor(64, 230, 184));
@@ -134,7 +134,7 @@ private:
                 for (int32 Glow = 4; Glow > 0; --Glow)
                     Circle(E, Layer, G, Center, FVector2D(R * (1 + Glow * .20)), Alpha(Amber, Fill * (.025f + Flash * .06f)));
             }
-            Star(E, Layer, G, Center + FVector2D(0, 5), R, 1, Alpha(Ink, .45f));
+            Star(E, Layer, G, Center + FVector2D(0, 5), R, 1, Alpha(ResultInk, .45f));
             Star(E, Layer, G, Center, R, 1, Alpha(Cream, .30f));
             Star(E, Layer, G, Center, R * .86f, 1, Teal);
             Star(E, Layer, G, Center, R, Fill, Amber);
@@ -173,17 +173,17 @@ private:
         const float A = FMath::DegreesToRadians(Rotation);
         const auto Rotate = [Center, A](FVector2D P)
         { return Center + FVector2D(P.X * FMath::Cos(A) - P.Y * FMath::Sin(A), P.X * FMath::Sin(A) + P.Y * FMath::Cos(A)); };
-        Circle(E, Layer, G, Center + FVector2D(5, 9), Radii, Alpha(Ink, .4f));
+        Circle(E, Layer, G, Center + FVector2D(5, 9), Radii, Alpha(ResultInk, .4f));
         // Fuse and cap are behind the ball, giving the falling silhouettes a clear spin.
         const TArray<FVector2D> Fuse = {Rotate(FVector2D(0, -65)), Rotate(FVector2D(4, -91)),
             Rotate(FVector2D(20, -108)), Rotate(FVector2D(27, -130))};
         FSlateDrawElement::MakeLines(E, ++Layer, G.ToPaintGeometry(), Fuse, ESlateDrawEffect::None, Cream, true, 9.f);
         Circle(E, Layer, G, Rotate(FVector2D(0, -67)), FVector2D(25, 19), Cream);
         Circle(E, Layer, G, Center, Radii, Cream);
-        Circle(E, Layer, G, Center, Radii - FVector2D(5, 5), Ink);
+        Circle(E, Layer, G, Center, Radii - FVector2D(5, 5), ResultInk);
         Circle(E, Layer, G, Center + FVector2D(-5, -6), (Radii - FVector2D(12, 12)), Teal);
         Circle(E, Layer, G, Center + FVector2D(-25, -29), FVector2D(16, 10), Alpha(Cream, .75f));
-        Circle(E, Layer, G, Center + FVector2D(22, 28), FVector2D(25, 7), Alpha(Ink, .28f));
+        Circle(E, Layer, G, Center + FVector2D(22, 28), FVector2D(25, 7), Alpha(ResultInk, .28f));
         Star(E, Layer, G, Rotate(FVector2D(27, -130)), 13.f, 1.f, Amber);
     }
 

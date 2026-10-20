@@ -55,7 +55,7 @@ void ABDPlayerController::BeginPlay()
     if (GetWorld()->GetGameViewport())
     {
         // NoCapture skips ordinary mouse-down dispatch once the initial capture is
-        // released. Temporary capture forwards every press, including RMB + LMB.
+        // released. Temporary capture forwards each left-button hold and release.
         GetWorld()->GetGameViewport()->SetMouseCaptureMode(EMouseCaptureMode::CaptureDuringMouseDown);
         GetWorld()->GetGameViewport()->SetMouseLockMode(EMouseLockMode::DoNotLock);
         GetWorld()->GetGameViewport()->SetHideCursorDuringCapture(false);
@@ -92,9 +92,8 @@ void ABDPlayerController::RefreshAlphaInput()
 void ABDPlayerController::SetupInputComponent()
 {
     Super::SetupInputComponent();
-    InputComponent->BindKey(EKeys::RightMouseButton, IE_Pressed, this, &ABDPlayerController::PressBomb);
-    InputComponent->BindKey(EKeys::RightMouseButton, IE_Released, this, &ABDPlayerController::ReleaseBomb).bExecuteWhenPaused = true;
     InputComponent->BindKey(EKeys::LeftMouseButton, IE_Pressed, this, &ABDPlayerController::LeftPressed);
+    InputComponent->BindKey(EKeys::LeftMouseButton, IE_DoubleClick, this, &ABDPlayerController::LeftPressed);
     InputComponent->BindKey(EKeys::LeftMouseButton, IE_Released, this, &ABDPlayerController::LeftReleased).bExecuteWhenPaused = true;
     InputComponent->BindKey(EKeys::Escape, IE_Pressed, this, &ABDPlayerController::TogglePause).bExecuteWhenPaused = true;
     InputComponent->BindKey(EKeys::R, IE_Pressed, this, &ABDPlayerController::Restart).bExecuteWhenPaused = true;
@@ -136,7 +135,6 @@ void ABDPlayerController::PlayerTick(float DeltaSeconds)
     Courier->MoveInRoom(Input);
     UpdateMouseAim(Courier);
     // Reconcile a release during pause or a focus change without advancing the fuse.
-    if (bBombButtonDown && !IsInputKeyDown(EKeys::RightMouseButton)) ReleaseBomb();
     if (bLeftBombButtonDown && !IsInputKeyDown(EKeys::LeftMouseButton)) LeftReleased();
     if (bMirrorBaseClickDown && !IsInputKeyDown(EKeys::LeftMouseButton)) bMirrorBaseClickDown=false;
 }
@@ -162,21 +160,11 @@ void ABDPlayerController::UpdateMouseAim(ABDCharacter* Courier)
 }
 void ABDPlayerController::PressBomb()
 {
-    if (!CanUseGameplayInput()) return;
-    if (bLeftBombButtonDown) return;
-    bBombButtonDown = true;
-    if (auto* Courier = Cast<ABDCharacter>(GetPawn()))
-    {
-        UpdateMouseAim(Courier);
-        Courier->DrawBomb();
-    }
+    // Retained for old code references. RMB no longer owns a bomb action.
 }
 void ABDPlayerController::ReleaseBomb()
 {
-    const bool bOwned=bBombButtonDown;
-    if (IsPaused()) return; // Keep ownership until resume, then reconcile the release.
     bBombButtonDown = false;
-    if (bOwned && CanUseGameplayInput()) if (auto* Courier = Cast<ABDCharacter>(GetPawn())) Courier->DropBomb();
 }
 void ABDPlayerController::LeftPressed()
 {
@@ -199,18 +187,10 @@ void ABDPlayerController::LeftPressed()
         }
     }
     UpdateMouseAim(Courier);
-    const auto* Session=GetGameInstance<UBDAlphaSession>();
-    const bool bSimple=!Session || Session->IsSimpleControls() || Session->GetScreen()==EBDAlphaScreen::MainMenu;
-    if (bSimple)
-    {
-        if (bBombButtonDown || bLeftBombButtonDown) return;
-        bLeftBombButtonDown=true;
-        Courier->DrawBomb();
-    }
-    // A bomb caught with an Advanced left click remains held without RMB.
-    // The next click must throw that same bomb, just like a bomb readied by RMB.
-    else if (bBombButtonDown || (Game->GetBombForPlayer(Courier) && Game->GetBombForPlayer(Courier)->GetHolder()==Courier)) Courier->ThrowBomb();
-    else if (Game->FindNearbyBomb(Courier)) Courier->DrawBomb();
+    if (bLeftBombButtonDown) return;
+    bLeftBombButtonDown=true;
+    // DrawBomb first catches a nearby live bomb, retaining its fuse and charge.
+    Courier->DrawBomb();
 }
 void ABDPlayerController::LeftReleased()
 {
@@ -235,11 +215,7 @@ void ABDPlayerController::TogglePause()
     if (auto* Session=GetGameInstance<UBDAlphaSession>()) { Session->TogglePause(); return; }
     const bool bWasPaused = IsPaused();
     SetPause(!bWasPaused);
-    if (bWasPaused && !IsInputKeyDown(EKeys::RightMouseButton))
-    {
-        bBombButtonDown = false;
-        if (CanUseGameplayInput()) if (auto* Courier = Cast<ABDCharacter>(GetPawn())) Courier->DropBomb();
-    }
+    if (bWasPaused && bLeftBombButtonDown && !IsInputKeyDown(EKeys::LeftMouseButton)) LeftReleased();
 }
 void ABDPlayerController::Restart()
 {

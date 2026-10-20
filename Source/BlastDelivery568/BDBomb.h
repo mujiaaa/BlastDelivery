@@ -29,6 +29,10 @@ public:
     bool ApplySize(float Size);
     void ApplyExternalBlast(const FVector& VelocityChange);
     const FBDPhysicsSettings& GetProfile() const { return Profile; }
+    float GetChargeFraction() const;
+    FVector GetThrowVelocity(const FVector& Forward) const;
+    FBDPhysicsSettings GetExplosionProfile() const;
+    float GetChargeVisualScale() const;
     float GetWorldRadius() const;
     ABDCharacter* GetHolder() const;
     bool WasThrown() const { return bThrown; }
@@ -58,11 +62,14 @@ private:
     FBDPhysicsSettings Profile;
     float RemainingFuse = 4.f;
     float InitialFuse = 4.f;
+    float HeldChargeSeconds = 0.f;
+    float AppliedChargeScale = 1.f;
     bool bExploded = false;
     bool bThrown = false;
     bool bCollisionFuseAccelerated = false;
     void FollowHolder();
     void ClearCharacterIgnore();
+    void UpdateChargeSize();
     void UpdatePresentation();
     UFUNCTION() void OnSolidHit(UPrimitiveComponent* HitComponent, AActor* OtherActor,
         UPrimitiveComponent* OtherComponent, FVector NormalImpulse, const FHitResult& Hit);

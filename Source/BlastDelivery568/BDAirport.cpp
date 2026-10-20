@@ -196,7 +196,7 @@ AActor* ABDAlphaAirportGameMode::Glyph(const TCHAR* Kind,const FVector& P,float 
     else if (Type==TEXT("Check")) { Stroke(-.3f,0,-.07f,-.23f); Stroke(-.07f,-.23f,.36f,.28f); }
     else if (Type==TEXT("Smoke")) { Circle(-.18f,0,.22f); Circle(.12f,.16f,.26f); Circle(.32f,-.1f,.19f); }
     else if (Type==TEXT("Aim")) { Circle(0,0,.25f); Stroke(-.42f,0,-.15f,0); Stroke(.15f,0,.42f,0); Stroke(0,-.42f,0,-.15f); Stroke(0,.15f,0,.42f); }
-    else if (Type==TEXT("MouseRight")) { Circle(0,0,.33f); Stroke(0,0,0,.3f); Stroke(-.3f,0,.3f,0); Stroke(.1f,.15f,.22f,.15f); }
+    else if (Type==TEXT("MouseLeft")) { Circle(0,0,.33f); Stroke(0,0,0,.3f); Stroke(-.3f,0,.3f,0); Stroke(-.1f,.15f,-.22f,.15f); }
     else if (Type==TEXT("Return")) { Circle(0,0,.3f,25,315); Stroke(.21f,-.21f,.04f,-.23f); Stroke(.21f,-.21f,.21f,-.04f); }
     else if (Type==TEXT("Shuttle")) { Stroke(-.4f,-.22f,.4f,-.22f); Stroke(-.4f,-.22f,-.4f,.28f); Stroke(-.4f,.28f,.4f,.28f); Stroke(.4f,.28f,.4f,-.22f); Circle(-.23f,-.28f,.08f); Circle(.23f,-.28f,.08f); }
     else { Stroke(-.35f,0,.35f,0); Stroke(.35f,0,.1f,.22f); Stroke(.35f,0,.1f,-.22f); }
@@ -330,7 +330,7 @@ void ABDAlphaAirportGameMode::BuildDock()
     Box(TEXT("Bomb landing backstop"),FVector(10.5f,.18f,0),FVector(.15f,.36f,1),TEXT("AirportTeal"),true);
     Box(TEXT("Blast jump takeoff"),FVector(9.8f,.075f,-1.2f),FVector(.85f,.04f,1.1f),TEXT("Plate"));
     Ring(TEXT("Blast jump takeoff ring"),FVector(9,.06f,-2.5f),.6f,TEXT("Plate"));
-    Label(TEXT("RMB"),FVector(8.8f,.12f,-3.3f),26);
+    Label(TEXT("HOLD LMB"),FVector(8.8f,.12f,-3.3f),26);
     Glyph(TEXT("Agent"),FVector(10.5f,.17f,1.65f),.75f,TEXT("Indicator"));
     Line(TEXT("No walking slash"),FVector(10.12f,.19f,1.28f),FVector(10.88f,.19f,2.02f),.06f,TEXT("Indicator"));
     Glyph(TEXT("Bomb"),FVector(11,.12f,.7f),.45f);
@@ -338,7 +338,7 @@ void ABDAlphaAirportGameMode::BuildDock()
     Glyph(TEXT("Agent"),FVector(9,.13f,-4.5f));
     Glyph(TEXT("Aim"),FVector(8.1f,.14f,-2.5f),.55f);
     Glyph(TEXT("Arrow"),FVector(7.5f,.14f,-2.5f),.55f,TEXT("Light"),180);
-    Glyph(TEXT("MouseRight"),FVector(9.15f,.14f,-2.5f),.65f);
+    Glyph(TEXT("MouseLeft"),FVector(9.15f,.14f,-2.5f),.65f);
     Floor(TEXT("Arrival agent dock"),FVector(30.8f,0,-4.4f),FVector2D(4,2.2f),TEXT("AirportBlue"),false);
 
     Shuttle=Root(TEXT("Cargo shuttle"),CarStart);
@@ -839,7 +839,7 @@ void ABDAlphaAirportGameMode::OnBombExploded(ABDBomb* Bomb)
     Super::OnBombExploded(Bomb);
     if (!CanRun() || !Bomb) return;
     const FVector Blast=ToUnity(Bomb->GetActorLocation());
-    const float Radius=Bomb->GetProfile().BlastRadius;
+    const float Radius=Bomb->GetExplosionProfile().BlastRadius;
     if (bEngineA)
     {
         const FVector Near(FMath::Clamp(Blast.X,double(AStart),double(AEnd)),FMath::Clamp(Blast.Y,-.1,3.4),FMath::Clamp(Blast.Z,-7.65,7.65));

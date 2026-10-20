@@ -123,22 +123,21 @@ void ABDTutorialHUD::Instruction(EBDTutorialScene Scene, int32 Index, float Offs
         break;
     case EBDTutorialScene::PutDown:
     {
-        Mouse(FVector2D(128,58),true);
-        // A contact dot holds on RMB, then lifts into two short release strokes.
-        // Keep RMB cyan throughout, and keep the single bomb on the ground.
+        Mouse(FVector2D(128,58),false);
+        // The existing placement page now represents a quick left-button toss.
         const bool bHoldingCue = Mode && Mode->Phase == EBDTutorialPhase::Playing
             && FMath::Fmod(Mode->GetPhaseTime(),2.8f) < 1.2f;
-        if (bHoldingCue) Circle(FVector2D(140,37),3.f,Ink,true);
+        if (bHoldingCue) Circle(FVector2D(116,37),3.f,Ink,true);
         else
         {
-            Line(FVector2D(141,14),FVector2D(144,7),Ink,2.f);
-            Line(FVector2D(151,21),FVector2D(158,16),Ink,2.f);
+            Line(FVector2D(117,14),FVector2D(120,7),Ink,2.f);
+            Line(FVector2D(127,21),FVector2D(134,16),Ink,2.f);
         }
         // This is an input-to-result arrow, ending before the stationary bomb.
         Arrow(FVector2D(176,62),FVector2D(239,26),FVector2D(308,58),Ink);
         Bomb(FVector2D(364,66),18,Ink);
         Line(FVector2D(333,85),FVector2D(395,85),Ink);
-        // Short contact/placement marks emphasize "here" when RMB is released.
+        // Short contact/placement marks emphasize the near landing point.
         Line(FVector2D(358,83),FVector2D(370,83),Ink,2.f);
         if (!bHoldingCue)
         {
@@ -148,7 +147,7 @@ void ABDTutorialHUD::Instruction(EBDTutorialScene Scene, int32 Index, float Offs
         break;
     }
     case EBDTutorialScene::CrossGap:
-        Mouse(FVector2D(65,58),true);
+        Mouse(FVector2D(65,58),false);
         Arrow(FVector2D(108,62),FVector2D(155,24),FVector2D(201,51),Ink);
         Bomb(FVector2D(242,67),15,Ink);
         Burst(FVector2D(242,67),22,Ink);

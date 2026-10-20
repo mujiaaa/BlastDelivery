@@ -258,12 +258,12 @@ void ABDTutorialGameMode::OnBombReleased(ABDBomb* Bomb, bool bThrown)
 {
     if (!IsGameplayInputAllowed() || Bomb != ActiveBomb) return;
     if (GetScene() == EBDTutorialScene::Throw && bThrown) MarkSuccess(Bomb);
-    if (GetScene() == EBDTutorialScene::PutDown && !bThrown)
+    if (GetScene() == EBDTutorialScene::PutDown && (!bThrown || Bomb->GetChargeFraction()<=.2f))
     {
         PlacedBomb = Bomb;
         // A grounded release is a valid put-down immediately. An airborne release
         // still has to reach this scene's floor before it counts.
-        if (Current.Player && Current.Player->GetCharacterMovement()->IsMovingOnGround()) MarkSuccess(Bomb);
+        if (!bThrown && Current.Player && Current.Player->GetCharacterMovement()->IsMovingOnGround()) MarkSuccess(Bomb);
     }
 }
 void ABDTutorialGameMode::OnBombExploded(ABDBomb* Bomb)

@@ -117,6 +117,8 @@ bool ABDBomb::Ignite(ABDCharacter* Character, float Fuse)
     Holder = Character;
     RemainingFuse = Fuse;
     InitialFuse=FMath::Max(.01f,Fuse);
+    HeldChargeSeconds = 0.f;
+    AppliedChargeScale = 1.f;
     bThrown = bExploded = bCollisionFuseAccelerated = false;
     Collision->SetSphereRadius(Profile.BombRadius*100.f);
     Collision->SetMassOverrideInKg(NAME_None,Profile.BombMass);
@@ -142,6 +144,42 @@ float ABDBomb::GetWorldRadius() const
 ABDCharacter* ABDBomb::GetHolder() const
 {
     return Holder.Get();
+}
+float ABDBomb::GetChargeFraction() const
+{
+    return bBanana ? 0.f : FMath::Clamp(HeldChargeSeconds/FMath::Max(.01f,Profile.ChargeSeconds),0.f,1.f);
+}
+FVector ABDBomb::GetThrowVelocity(const FVector& Forward) const
+{
+    const FVector Direction=Forward.GetSafeNormal2D();
+    // Jungle bait keeps its original throw, independent of the new bomb charge settings.
+    if (bBanana) return Direction*520.f+FVector(0,0,270.f);
+    const float Alpha=FMath::Pow(GetChargeFraction(),FMath::Max(.01f,Profile.ChargeThrowExponent));
+    const float Speed=FMath::Lerp(Profile.MinThrowSpeed,Profile.ThrowSpeed,Alpha);
+    const float Lift=FMath::Lerp(Profile.MinThrowLift,Profile.ThrowLift,Alpha);
+    return Direction*Speed*100.f+FVector(0,0,Lift*100.f);
+}
+FBDPhysicsSettings ABDBomb::GetExplosionProfile() const
+{
+    FBDPhysicsSettings Result=Profile;
+    if (bBanana) return Result;
+    const float Charge=GetChargeFraction();
+    const float RadiusMultiplier=FMath::Lerp(1.f,FMath::Max(1.f,Profile.MaxChargeRadiusMultiplier),
+        FMath::Pow(Charge,FMath::Max(.01f,Profile.ChargeRadiusExponent)));
+    const float ImpulseMultiplier=FMath::Lerp(1.f,FMath::Max(1.f,Profile.MaxChargeImpulseMultiplier),
+        FMath::Pow(Charge,FMath::Max(.01f,Profile.ChargeImpulseExponent)));
+    // Derive every effect from the ignition snapshot; repeated reads and pickups never compound it.
+    Result.BlastRadius*=RadiusMultiplier;
+    Result.BlastImpulse*=ImpulseMultiplier;
+    Result.PlayerBlastSpeed*=ImpulseMultiplier;
+    Result.HeldRecoilSpeed*=ImpulseMultiplier;
+    Result.HeldBlastLift*=ImpulseMultiplier;
+    Result.GroundBlastLift*=ImpulseMultiplier;
+    return Result;
+}
+float ABDBomb::GetChargeVisualScale() const
+{
+    return AppliedChargeScale;
 }
 bool ABDBomb::ApplySize(float Size)
 {
@@ -203,12 +241,45 @@ void ABDBomb::Tick(float DeltaSeconds)
         }
     }
     if (bBanana) return;
-    RemainingFuse = FMath::Max(0.f,RemainingFuse-DeltaSeconds*GetFuseBurnRate());
+    const float Elapsed=FMath::Max(0.f,DeltaSeconds);
+    const float BurnRate=GetFuseBurnRate();
+    if (IsHeld())
+    {
+        // Charging and burning run together. Even a long frame cannot add charge after detonation.
+        const float LiveElapsed=FMath::Min(Elapsed,RemainingFuse/FMath::Max(.01f,BurnRate));
+        HeldChargeSeconds=FMath::Min(FMath::Max(.01f,Profile.ChargeSeconds),HeldChargeSeconds+LiveElapsed);
+        UpdateChargeSize();
+    }
+    RemainingFuse = FMath::Max(0.f,RemainingFuse-Elapsed*BurnRate);
     UpdatePresentation();
     if (RemainingFuse <= 0.f) Explode();
 }
+void ABDBomb::UpdateChargeSize()
+{
+    if (bBanana || !IsHeld()) return;
+    const float DesiredScale=FMath::Lerp(1.f,FMath::Max(1.f,Profile.MaxChargeVisualScale),GetChargeFraction());
+    if (DesiredScale<=AppliedChargeScale+KINDA_SMALL_NUMBER) return;
+    const float LocalRadius=Profile.BombRadius*100.f*DesiredScale;
+    const float WorldScale=GetWorldRadius()/FMath::Max(KINDA_SMALL_NUMBER,Collision->GetUnscaledSphereRadius());
+    FVector Grip;
+    // Retain the last safe size in a tight space. Charge and fuse still advance;
+    // retry growth when the holder has more clearance, never grow during flight.
+    if (!FindClearGrip(this,Holder.Get(),LocalRadius*WorldScale,Grip)) return;
+    AppliedChargeScale=DesiredScale;
+    Collision->SetSphereRadius(LocalRadius);
+    Collision->SetMassOverrideInKg(NAME_None,Profile.BombMass);
+    SetActorLocation(Grip,false,nullptr,ETeleportType::TeleportPhysics);
+}
 void ABDBomb::UpdatePresentation()
 {
+    if (bBanana) return;
+    // The shell and spherical collision grow together so the thrown shell rests on the floor.
+    // Actor scale remains the independent BombSize tuning and mass is preserved.
+    const float VisualScale=GetChargeVisualScale();
+    Mesh->SetRelativeScale3D(FVector(Profile.BombRadius*2.f*VisualScale));
+    Wick->SetRelativeLocation(FVector(0,0,(Profile.BombRadius*100.f+8.f)*VisualScale));
+    Wick->SetRelativeScale3D(FVector(.075f,.075f,.18f)*VisualScale);
+    FuseTip->SetRelativeLocation(FVector(0,0,(Profile.BombRadius*100.f+18.f)*VisualScale));
     // Unity's fuse warning is driven by the original fuse fraction, so catching
     // or resizing a live bomb never makes its visual warning start over.
     const float Urgency=FMath::Clamp(1.f-RemainingFuse/InitialFuse,0.f,1.f);
@@ -218,7 +289,7 @@ void ABDBomb::UpdatePresentation()
         ShellMaterial->SetVectorParameterValue(TEXT("Color"),FMath::Lerp(FLinearColor(.10f,.14f,.20f),FLinearColor(1.f,.20f,.04f),Urgency*Pulse));
         ShellMaterial->SetVectorParameterValue(TEXT("EmissionColor"),FLinearColor(1.f,.19f,.01f)*(Pulse*Urgency*.6f));
     }
-    FuseTip->SetRelativeScale3D(FVector(.11f+Pulse*.05f));
+    FuseTip->SetRelativeScale3D(FVector((.11f+Pulse*.05f)*VisualScale));
 }
 void ABDBomb::ClearCharacterIgnore()
 {
@@ -247,8 +318,7 @@ void ABDBomb::Release(bool bThrow, bool bNotifyAction)
             FCollisionShape::MakeSphere(GetWorldRadius()),Query);
         Position = bHit ? Hit.Location : Desired;
     }
-    const FVector Velocity = bThrow ? Character->GetActorForwardVector()*Profile.ThrowSpeed*100.f
-        + FVector(0,0,Profile.ThrowLift*100.f) : FVector::ZeroVector;
+    const FVector Velocity = bThrow ? GetThrowVelocity(Character->GetActorForwardVector()) : FVector::ZeroVector;
     RemoveTickPrerequisiteActor(Character);
     ClearCharacterIgnore();
     IgnoredCharacter = Character;
@@ -286,7 +356,7 @@ bool ABDBomb::TryPickup(ABDCharacter* Character)
     bThrown = false;
     AddTickPrerequisiteActor(Character);
     FollowHolder();
-    // RemainingFuse, Profile and first-contact acceleration deliberately survive pickup.
+    // Charge, remaining fuse, profile and first-contact acceleration deliberately survive pickup.
     Mode->AssignBomb(this,Character);
     return true;
 }
@@ -346,6 +416,9 @@ void ABDBomb::MakeBanana()
 {
     if (bBanana) return;
     bBanana=true;
+    AppliedChargeScale=1.f;
+    Collision->SetSphereRadius(Profile.BombRadius*100.f);
+    Collision->SetMassOverrideInKg(NAME_None,Profile.BombMass);
     BDVisuals::Material(Mesh,TEXT("JungleBanana"));
     Mesh->SetRelativeScale3D(FVector(.56,.22,.26));
     Mesh->SetRelativeRotation(FRotator(25,0,0));

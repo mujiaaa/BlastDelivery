@@ -1,12 +1,12 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "GameFramework/HUD.h"
+#include "BDHUD.h"
 #include "BDTutorialGameMode.h"
 #include "BDTutorialHUD.generated.h"
 
 UCLASS(Config=Game)
-class BLASTDELIVERY568_API ABDTutorialHUD : public AHUD
+class BLASTDELIVERY568_API ABDTutorialHUD : public ABDHUD
 {
     GENERATED_BODY()
 public:

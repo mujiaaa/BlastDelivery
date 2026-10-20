@@ -172,7 +172,7 @@ void ABDGameMode::ExplodeAt(const FVector& Position, ABDCharacter* Holder, AActo
 {
     if (bCompleted) return;
     const ABDBomb* Source=Cast<ABDBomb>(Bomb);
-    const FBDPhysicsSettings Profile=Source ? Source->GetProfile() : PhysicsSettings;
+    const FBDPhysicsSettings Profile=Source ? Source->GetExplosionProfile() : PhysicsSettings;
     const float Radius=Profile.BlastRadius*100.f;
     // Resting cargo remains queryable while locked against contact pushing.
     TArray<FOverlapResult> Overlaps;
@@ -221,7 +221,7 @@ void ABDGameMode::ExplodeAt(const FVector& Position, ABDCharacter* Holder, AActo
 FVector ABDGameMode::GetHeldBlastVelocity(const ABDCharacter* Player) const
 {
     const ABDBomb* Held=GetBombForPlayer(Player);
-    const auto& Profile=IsValid(Held) ? Held->GetProfile() : PhysicsSettings;
+    const FBDPhysicsSettings Profile=IsValid(Held) ? Held->GetExplosionProfile() : PhysicsSettings;
     return -Player->GetActorForwardVector()*Profile.HeldRecoilSpeed*100.f + FVector(0,0,Profile.HeldBlastLift*100.f);
 }
 void ABDGameMode::RestartTutorial()

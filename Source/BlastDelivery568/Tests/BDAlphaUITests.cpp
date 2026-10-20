@@ -421,10 +421,13 @@ bool FBDAlphaMenuFlowTest::RunTest(const FString& Parameters)
     Step(TEXT("Settings controls update session values via Slate"), {}, [](FFixture& X)
     {
         if (!X.After()) return false;
-        X.Click(TEXT("Controls: SIMPLE  >")); X.Check(!X.Session->IsSimpleControls(), TEXT("Control toggle selects Advanced"));
+        X.Check(!X.Widget(TEXT("SButton"), TEXT("Controls: SIMPLE  >"))
+            && !X.Widget(TEXT("SButton"), TEXT("Controls: ADVANCED  >")), TEXT("Obsolete control mode selector is absent"));
+        X.Check(HasText(X.Root().ToSharedRef(), TEXT("Hold LMB to charge; release to throw.")),
+            TEXT("Settings explains the single charged-throw gesture"));
         X.Pointer(X.Widget(TEXT("SSlider")), EKeys::LeftMouseButton, FVector2D(.35, .5));
         X.Check(X.Session->GetVolume() > .15f && X.Session->GetVolume() < .5f, TEXT("Volume slider applies"));
-        X.Check(!X.Widget(TEXT("SCheckBox"), TEXT("Tutorial jump assist")), TEXT("Settings contains only Unity Alpha controls and volume"));
+        X.Check(!X.Widget(TEXT("SCheckBox"), TEXT("Tutorial jump assist")), TEXT("Settings does not add tutorial-specific gameplay options"));
         X.Bounds(); X.Shot(TEXT("03-settings.png")); X.Resize(1024, 640);
         return true;
     });
@@ -489,11 +492,10 @@ bool FBDAlphaMenuFlowTest::RunTest(const FString& Parameters)
         X.Click(TEXT("X"));
         return X.Check(X.Session->GetScreen() == EBDAlphaScreen::Playing, TEXT("Closing tutorial tuning keeps gameplay active"));
     });
-    Step(TEXT("Tutorial starts Simple with a minimal HUD"), {}, [](FFixture& X)
+    Step(TEXT("Tutorial starts with a minimal HUD"), {}, [](FFixture& X)
     {
         if (!X.After(.7) || !Cast<ABDTutorialGameMode>(X.Mode) || !X.PC->GetPawn()) return false;
         X.Resize(1280, 720);
-        X.Check(X.Session->IsSimpleControls(), TEXT("Tutorial defaults to Simple"));
         X.Check(!X.PC->IsPaused(), TEXT("Tutorial plays"));
         X.Click(TEXT("II"));
         X.Check(X.Session->GetScreen() == EBDAlphaScreen::Pause, TEXT("HUD pause button works"));
@@ -555,9 +557,9 @@ bool FBDAlphaMenuFlowTest::RunTest(const FString& Parameters)
     Step(TEXT("Settings Back preserves pause origin"), {}, [](FFixture& X)
     {
         if (!X.After()) return false;
-        X.Check(X.Session->IsTutorialControlsLocked(), TEXT("Active tutorial keeps Simple controls"));
-        X.Click(TEXT("Controls: SIMPLE"));
-        X.Check(X.Session->IsSimpleControls(), TEXT("Tutorial control toggle cannot change its designed controls"));
+        X.Check(!X.Widget(TEXT("SButton"), TEXT("Controls: SIMPLE")), TEXT("Tutorial settings also omit the obsolete mode selector"));
+        X.Check(HasText(X.Root().ToSharedRef(), TEXT("Hold LMB to charge; release to throw.")),
+            TEXT("Paused tutorial settings retain the current mouse instruction"));
         X.Click(TEXT("Back"));
         X.Check(X.Session->GetScreen() == EBDAlphaScreen::Pause, TEXT("Back returns to pause")); return true;
     });

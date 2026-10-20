@@ -39,7 +39,19 @@ bool FBDAlphaDefaultsTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("Cargo mass remains thirty kilograms"),P.CrateMass,30.f);
     TestFalse(TEXT("Faster contact fuse is opt-in"),P.bFastCollisionFuse);
     TestFalse(TEXT("Goal assistance is opt-in"),P.bGoalAssist);
-    TestEqual(TEXT("All twenty-three Unity playtest values are exposed"),UBDAlphaSession::Parameters().Num(),23);
+    const TCHAR* RequiredParameters[] = {
+        TEXT("PlayerSize"), TEXT("MoveSpeed"), TEXT("MovementAcceleration"), TEXT("MovementBraking"),
+        TEXT("AirSteering"), TEXT("HeldRecoilSpeed"), TEXT("HeldBlastLift"), TEXT("BombSize"), TEXT("FuseSeconds"),
+        TEXT("ThrowSpeed"), TEXT("ThrowLift"), TEXT("BlastRadius"), TEXT("BlastImpulse"), TEXT("PlayerBlastSpeed"),
+        TEXT("CollisionFuseMultiplier"), TEXT("CrateSize"), TEXT("CrateMass"), TEXT("CrateDamping"),
+        TEXT("CrateWallRestitution"), TEXT("CrateAngularDamping"), TEXT("CrateImpactTorqueScale"),
+        TEXT("CrateMaxAngularSpeed"), TEXT("GoalAssistRange"), TEXT("ChargeSeconds"), TEXT("MinThrowSpeed"),
+        TEXT("MinThrowLift"), TEXT("ChargeThrowExponent"), TEXT("ChargeRadiusExponent"), TEXT("ChargeImpulseExponent"),
+        TEXT("MaxChargeRadiusMultiplier"), TEXT("MaxChargeImpulseMultiplier"), TEXT("MaxChargeVisualScale")
+    };
+    for (const TCHAR* Id : RequiredParameters)
+        TestTrue(FString::Printf(TEXT("Playtest parameter %s is exposed"), Id),
+            UBDAlphaSession::Parameters().ContainsByPredicate([Id](const FBDTuningParameter& Value) { return Value.Id == Id; }));
     TestTrue(TEXT("Unity Y becomes Unreal Z, and depth preserves room orientation"),
         ABDAlphaPlaygroundGameMode::FromUnity(FVector(-4,.62f,1.6f)).Equals(FVector(-400,-160,62),.001f));
     TestTrue(TEXT("Dimensions stay positive when remapping axes"),

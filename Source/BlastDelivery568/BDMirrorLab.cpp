@@ -509,8 +509,9 @@ void ABDAlphaMirrorGameMode::OnBombExploded(ABDBomb* Bomb)
 {
     if (!IsValid(Bomb) || !GameplayActive(GetWorld())) return;
     const uint64 Id=NextExplosionId++;
-    for (ABDRotatingLaserMirror* Mirror:Mirrors) if (IsValid(Mirror)) Mirror->ReceiveExplosion(Bomb->GetActorLocation(),Bomb->GetProfile().BlastRadius*100.f,Id,Bomb);
-    if (IsValid(CentralEmitter)) CentralEmitter->ReceiveExplosion(Bomb->GetActorLocation(),Bomb->GetProfile().BlastRadius*100.f,Id,Bomb);
+    const float Radius=Bomb->GetExplosionProfile().BlastRadius*100.f;
+    for (ABDRotatingLaserMirror* Mirror:Mirrors) if (IsValid(Mirror)) Mirror->ReceiveExplosion(Bomb->GetActorLocation(),Radius,Id,Bomb);
+    if (IsValid(CentralEmitter)) CentralEmitter->ReceiveExplosion(Bomb->GetActorLocation(),Radius,Id,Bomb);
 }
 bool ABDAlphaMirrorGameMode::TryRotateBaseAtRay(const FVector& Origin,const FVector& Direction)
 {

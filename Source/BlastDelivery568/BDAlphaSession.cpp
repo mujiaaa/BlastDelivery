@@ -46,11 +46,20 @@ const TArray<FBDTuningParameter>& UBDAlphaSession::Parameters()
         {TEXT("HeldBlastLift"),TEXT("Held-blast lift"),0,3.f,10.f,&FBDPhysicsSettings::HeldBlastLift},
         {TEXT("BombSize"),TEXT("Bomb size"),1,.5f,2.f,&FBDPhysicsSettings::BombSize},
         {TEXT("FuseSeconds"),TEXT("Fuse duration"),1,1.5f,8.f,&FBDPhysicsSettings::FuseSeconds},
-        {TEXT("ThrowSpeed"),TEXT("Throw speed"),1,2.f,12.f,&FBDPhysicsSettings::ThrowSpeed},
-        {TEXT("ThrowLift"),TEXT("Throw lift"),1,.5f,6.f,&FBDPhysicsSettings::ThrowLift},
-        {TEXT("BlastRadius"),TEXT("Blast radius"),1,1.5f,6.f,&FBDPhysicsSettings::BlastRadius},
-        {TEXT("BlastImpulse"),TEXT("Crate blast impulse"),1,140.f,650.f,&FBDPhysicsSettings::BlastImpulse},
+        {TEXT("ChargeSeconds"),TEXT("Full charge time (s)"),1,.25f,6.f,&FBDPhysicsSettings::ChargeSeconds},
+        {TEXT("MinThrowSpeed"),TEXT("Minimum throw speed"),1,0.f,2.f,&FBDPhysicsSettings::MinThrowSpeed},
+        {TEXT("ThrowSpeed"),TEXT("Maximum throw speed"),1,2.f,12.f,&FBDPhysicsSettings::ThrowSpeed},
+        {TEXT("MinThrowLift"),TEXT("Minimum throw lift"),1,0.f,.5f,&FBDPhysicsSettings::MinThrowLift},
+        {TEXT("ThrowLift"),TEXT("Maximum throw lift"),1,.5f,6.f,&FBDPhysicsSettings::ThrowLift},
+        {TEXT("ChargeThrowExponent"),TEXT("Throw charge curve"),1,.25f,3.f,&FBDPhysicsSettings::ChargeThrowExponent},
+        {TEXT("BlastRadius"),TEXT("Base blast radius"),1,1.5f,6.f,&FBDPhysicsSettings::BlastRadius},
+        {TEXT("MaxChargeRadiusMultiplier"),TEXT("Full-charge radius multiplier"),1,1.f,3.f,&FBDPhysicsSettings::MaxChargeRadiusMultiplier},
+        {TEXT("ChargeRadiusExponent"),TEXT("Radius charge curve"),1,.25f,3.f,&FBDPhysicsSettings::ChargeRadiusExponent},
+        {TEXT("BlastImpulse"),TEXT("Base crate blast impulse"),1,140.f,650.f,&FBDPhysicsSettings::BlastImpulse},
+        {TEXT("MaxChargeImpulseMultiplier"),TEXT("Full-charge force multiplier"),1,1.f,3.f,&FBDPhysicsSettings::MaxChargeImpulseMultiplier},
+        {TEXT("ChargeImpulseExponent"),TEXT("Force charge curve"),1,.25f,3.f,&FBDPhysicsSettings::ChargeImpulseExponent},
         {TEXT("PlayerBlastSpeed"),TEXT("Ground-blast recoil"),1,8.f,26.f,&FBDPhysicsSettings::PlayerBlastSpeed},
+        {TEXT("MaxChargeVisualScale"),TEXT("Full-charge bomb size"),1,1.f,2.f,&FBDPhysicsSettings::MaxChargeVisualScale},
         {TEXT("CollisionFuseMultiplier"),TEXT("Collision fuse speed"),1,2.f,20.f,&FBDPhysicsSettings::CollisionFuseMultiplier},
         {TEXT("CrateSize"),TEXT("Crate size"),2,.5f,2.f,&FBDPhysicsSettings::CrateSize},
         {TEXT("CrateMass"),TEXT("Mass"),2,10.f,60.f,&FBDPhysicsSettings::CrateMass},
@@ -121,16 +130,28 @@ bool UBDAlphaSession::GetFeature(FName Id) const
 {
     if (Id == TEXT("fastFuse")) return PlaygroundSettings.bFastCollisionFuse;
     if (Id == TEXT("goalAssist")) return PlaygroundSettings.bGoalAssist;
+    if (Id == TEXT("trajectory")) return PlaygroundSettings.bShowTrajectory;
+    if (Id == TEXT("landingPoint")) return PlaygroundSettings.bShowLandingPoint;
+    if (Id == TEXT("blastPreview")) return PlaygroundSettings.bShowBlastRadius;
     if (Id == TEXT("tutorialAssist")) return bTutorialAssist;
     return false;
 }
 void UBDAlphaSession::SetFeature(FName Id, bool Value)
 {
     if (Id == TEXT("tutorialAssist")) { bTutorialAssist = Value; return; }
+    bool FBDPhysicsSettings::* Field = nullptr;
+    if (Id == TEXT("fastFuse")) Field = &FBDPhysicsSettings::bFastCollisionFuse;
+    else if (Id == TEXT("goalAssist")) Field = &FBDPhysicsSettings::bGoalAssist;
+    else if (Id == TEXT("trajectory")) Field = &FBDPhysicsSettings::bShowTrajectory;
+    else if (Id == TEXT("landingPoint")) Field = &FBDPhysicsSettings::bShowLandingPoint;
+    else if (Id == TEXT("blastPreview")) Field = &FBDPhysicsSettings::bShowBlastRadius;
+    if (!Field) return;
+    FBDPhysicsSettings Candidate = GetPlaygroundSettings();
+    Candidate.*Field = Value;
+    if (auto* Mode = GetWorld() ? GetWorld()->GetAuthGameMode<ABDGameMode>() : nullptr)
+        if (!Mode->ApplyPhysicsSettings(Candidate)) return;
+    PlaygroundSettings.*Field = Value;
     bPracticeRun = true;
-    if (Id == TEXT("fastFuse")) PlaygroundSettings.bFastCollisionFuse = Value;
-    else if (Id == TEXT("goalAssist")) PlaygroundSettings.bGoalAssist = Value;
-    if (auto* Mode = GetWorld()->GetAuthGameMode<ABDGameMode>()) Mode->ApplyPhysicsSettings(GetPlaygroundSettings());
 }
 void UBDAlphaSession::ResetTuning()
 {
@@ -188,7 +209,11 @@ void UBDAlphaSession::StartLevel(int32 Index)
     const FBDPhysicsSettings Settings = GetPlaygroundSettings();
     const FBDPhysicsSettings Defaults = GetAuthoredSettings();
     for (const auto& P : Parameters()) if (!FMath::IsNearlyEqual(Settings.*P.Field,Defaults.*P.Field)) bPracticeRun=true;
-    bPracticeRun |= Settings.bFastCollisionFuse || Settings.bGoalAssist;
+    bPracticeRun |= Settings.bFastCollisionFuse != Defaults.bFastCollisionFuse
+        || Settings.bGoalAssist != Defaults.bGoalAssist
+        || Settings.bShowTrajectory != Defaults.bShowTrajectory
+        || Settings.bShowLandingPoint != Defaults.bShowLandingPoint
+        || Settings.bShowBlastRadius != Defaults.bShowBlastRadius;
     const TCHAR* Maps[] = {TEXT("/Game/Maps/FiveSceneTutorial"),TEXT("/Game/Maps/Tutorial"),TEXT("/Game/Maps/Tutorial"),TEXT("/Game/Maps/Tutorial"),TEXT("/Game/Maps/JungleBananaTrap")};
     const TCHAR* Modes[] = {TEXT(""),TEXT("game=/Script/BlastDelivery568.BDAlphaPlaygroundGameMode"),TEXT("game=/Script/BlastDelivery568.BDAlphaMirrorGameMode"),TEXT("game=/Script/BlastDelivery568.BDAlphaAirportGameMode"),TEXT("game=/Script/BlastDelivery568.BDJungleGameMode")};
     UGameplayStatics::OpenLevel(this,FName(Maps[Index]),true,Modes[Index]);

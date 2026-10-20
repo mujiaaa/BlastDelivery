@@ -619,55 +619,40 @@ private:
     TSharedRef<SWidget> Feature(FName Id, const TCHAR* Text)
     {
         const auto Weak = Session;
+        auto Check = SNew(SCheckBox)
+            .IsChecked_Lambda([Weak, Id]() { return Weak.IsValid() && Weak->GetFeature(Id) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+            .OnCheckStateChanged_Lambda([Weak, Id](ECheckBoxState State) { if (auto* S = Weak.Get()) S->SetFeature(Id, State == ECheckBoxState::Checked); })
+            .ForegroundColor(Ink).Padding(FMargin(8, 0))
+            [Label(Text, 12, Ink, true)];
+        Check->SetTag(FName(*FString::Printf(TEXT("AlphaFeature.%s"), *Id.ToString())));
         return SNew(SBox).HeightOverride(38)
             [SNew(SBorder).BorderImage(&SoftBrush).BorderBackgroundColor(Cream).Padding(FMargin(10, 2))
-                [SNew(SCheckBox)
-                    .IsChecked_Lambda([Weak, Id]() { return Weak.IsValid() && Weak->GetFeature(Id) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
-                    .OnCheckStateChanged_Lambda([Weak, Id](ECheckBoxState State) { if (auto* S = Weak.Get()) S->SetFeature(Id, State == ECheckBoxState::Checked); })
-                    .ForegroundColor(Ink).Padding(FMargin(8, 0))
-                    [Label(Text, 12, Ink, true)]]];
+                [Check]];
     }
 
     TSharedRef<SWidget> Settings()
     {
         const auto Weak = Session;
-        auto Toggle = SNew(SAlphaButton).Height(56)
-            .Text_Lambda([Weak]()
-            {
-                if (!Weak.IsValid()) return FText::GetEmpty();
-                if (Weak->IsTutorialControlsLocked()) return Txt(TEXT("Controls: SIMPLE"));
-                return Txt(Weak->IsSimpleControls() ? TEXT("Controls: SIMPLE  >") : TEXT("Controls: ADVANCED  >"));
-            })
-            .OnClicked_Lambda([Weak]()
-            {
-                if (auto* S = Weak.Get()) S->SetSimpleControls(!S->IsSimpleControls());
-                return FReply::Handled();
-            });
-        FirstFocus = Toggle->FocusTarget();
         auto Body = SNew(SOverlay).Visibility(EVisibility::SelfHitTestInvisible)
-            + SOverlay::Slot().VAlign(VAlign_Top)[Toggle]
-            + SOverlay::Slot().VAlign(VAlign_Top).Padding(0, 70, 0, 0)
-                [SNew(STextBlock).Font(Font(11)).ColorAndOpacity(Muted).AutoWrapText(true)
-                    .Text_Lambda([Weak]() { return Txt(Weak.IsValid() && Weak->IsSimpleControls()
-                        ? TEXT("Hold either mouse button to take / pick up a bomb.\nRelease left to throw; release right to drop.")
-                        : TEXT("Hold right mouse to take / hold a bomb.\nClick left to throw or pick up; release right to drop a timed bomb.")); })]
-            + SOverlay::Slot().VAlign(VAlign_Top).Padding(0, 139, 0, 0)
+            + SOverlay::Slot().VAlign(VAlign_Top).HAlign(HAlign_Center).Padding(0, 16, 0, 0)
+                [Label(TEXT("Hold LMB to charge; release to throw."), 14, Muted)]
+            + SOverlay::Slot().VAlign(VAlign_Top).Padding(0, 86, 0, 0)
                 [SNew(SHorizontalBox)
                     + SHorizontalBox::Slot().FillWidth(1)[Label(TEXT("Master volume"), 14)]
                     + SHorizontalBox::Slot().AutoWidth()[SNew(STextBlock).Font(Font(11)).ColorAndOpacity(Muted)
                         .Text_Lambda([Weak]() { return FText::FromString(FString::Printf(TEXT("%d%%"), Weak.IsValid() ? FMath::RoundToInt(Weak->GetVolume() * 100) : 0)); })]]
-            + SOverlay::Slot().VAlign(VAlign_Top).Padding(0, 171, 0, 0)
+            + SOverlay::Slot().VAlign(VAlign_Top).Padding(0, 118, 0, 0)
                 [SNew(SBox).HeightOverride(20)
                     [SNew(SSlider).SliderBarColor(Mint).SliderHandleColor(Mint)
                         .Value_Lambda([Weak]() { return Weak.IsValid() ? Weak->GetVolume() : 1.f; })
                         .OnValueChanged_Lambda([Weak](float Value) { if (auto* S = Weak.Get()) S->SetVolume(Value); })]]
-            + SOverlay::Slot().HAlign(HAlign_Center).VAlign(VAlign_Top).Padding(0, 236, 0, 0)
+            + SOverlay::Slot().HAlign(HAlign_Center).VAlign(VAlign_Top).Padding(0, 178, 0, 0)
                 [Sized(Button(TEXT("Physics tuning (G)"), &UBDAlphaSession::ToggleTuning, 54), 320, 54)]
-            + SOverlay::Slot().HAlign(HAlign_Center).VAlign(VAlign_Top).Padding(0, 312, 0, 0)
+            + SOverlay::Slot().HAlign(HAlign_Center).VAlign(VAlign_Top).Padding(0, 254, 0, 0)
                 [Sized(Button(TEXT("Back"), &UBDAlphaSession::Back, 54, Mint), 220, 54)];
         auto PageBody = Page(TEXT("SETTINGS"));
         PageBody->AddSlot().HAlign(HAlign_Center).VAlign(VAlign_Top)
-            .Padding(0, FMath::Max(320.f, float(DesignSize.Y / 2 - 110)), 0, 0)[Sized(Body, 620, 370)];
+            .Padding(0, FMath::Max(320.f, float(DesignSize.Y / 2 - 110)), 0, 0)[Sized(Body, 620, 310)];
         return PageBody;
     }
 
@@ -747,7 +732,8 @@ private:
                         const float V = Weak.IsValid() ? Weak->GetParameter(Id) : 0.f;
                         const FString Name = Id.ToString();
                         if (Name.EndsWith(TEXT("Size"))) return FText::FromString(FString::Printf(TEXT("%d%%"), FMath::RoundToInt(V * 100)));
-                        if (Name == TEXT("CollisionFuseMultiplier")) return FText::FromString(FString::Printf(TEXT("%.1fx"), V));
+                        if (Name.EndsWith(TEXT("Multiplier")) || Name == TEXT("MaxChargeVisualScale"))
+                            return FText::FromString(FString::Printf(TEXT("%.2fx"), V));
                         return FText::FromString(V >= 100.f ? FString::Printf(TEXT("%.0f"), V) : FString::Printf(TEXT("%.2f"), V));
                     })]]
                 + SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
@@ -769,24 +755,51 @@ private:
                     .Selected_Lambda([Weak, I]() { return Weak.IsValid() && Weak->TuningTab == I; })
                     .OnClicked_Lambda([Weak, I]() { if (auto* State = Weak.Get()) State->TuningTab = I; return FReply::Handled(); })];
         auto Rows = SNew(SVerticalBox);
+        auto Section = [&](const TCHAR* Title)
+        { Rows->AddSlot().AutoHeight().Padding(0, 8, 0, 8)[Label(Title, 11, Cream, true)]; };
+        auto AddFeature = [&](FName Id, const TCHAR* Title)
+        { Rows->AddSlot().AutoHeight().Padding(2, 0, 2, 8)[Feature(Id, Title)]; };
+        auto AddParameter = [&](FName Id)
+        {
+            for (const auto& P : UBDAlphaSession::Parameters())
+                if (P.Id == Id) { Rows->AddSlot().AutoHeight()[Parameter(P)]; break; }
+        };
+        if (S->TuningTab == 1)
+        {
+            Section(TEXT("AIM PREVIEW"));
+            AddFeature(TEXT("trajectory"), TEXT("Throw trajectory"));
+            AddFeature(TEXT("landingPoint"), TEXT("Landing point"));
+            AddFeature(TEXT("blastPreview"), TEXT("Blast radius preview"));
+            Rows->AddSlot().AutoHeight().Padding(0, 0, 0, 8)
+                [SNew(STextBlock).Font(Font(11)).ColorAndOpacity(Muted).AutoWrapText(true)
+                    .Text(Txt(TEXT("First impact estimate; bombs may roll.")))];
+        }
         for (const auto& P : UBDAlphaSession::Parameters())
             if (P.Group == S->TuningTab && P.Id != TEXT("CollisionFuseMultiplier") && P.Id != TEXT("GoalAssistRange"))
+            {
+                if (S->TuningTab == 1)
+                {
+                    if (P.Id == TEXT("BombSize")) Section(TEXT("BOMB"));
+                    else if (P.Id == TEXT("ChargeSeconds")) Section(TEXT("CHARGED THROW"));
+                    else if (P.Id == TEXT("BlastRadius")) Section(TEXT("CHARGED EXPLOSION"));
+                    else if (P.Id == TEXT("MaxChargeVisualScale")) Section(TEXT("APPEARANCE"));
+                }
                 Rows->AddSlot().AutoHeight()[Parameter(P)];
-        if (S->TuningTab == 1 || S->TuningTab == 2)
+                if (S->TuningTab == 1 && P.Id == TEXT("FuseSeconds"))
+                {
+                    AddFeature(TEXT("fastFuse"), TEXT("Short fuse on impact"));
+                    if (S->GetFeature(TEXT("fastFuse"))) AddParameter(TEXT("CollisionFuseMultiplier"));
+                }
+            }
+        if (S->TuningTab == 2)
         {
-            const bool IsBomb = S->TuningTab == 1;
-            const FName FeatureId = IsBomb ? TEXT("fastFuse") : TEXT("goalAssist");
-            const FName ParameterId = IsBomb ? TEXT("CollisionFuseMultiplier") : TEXT("GoalAssistRange");
-            Rows->AddSlot().AutoHeight().Padding(2, 3, 2, 13)
-                [Feature(FeatureId, IsBomb ? TEXT("Short fuse on impact") : TEXT("Goal assist"))];
-            if (S->GetFeature(FeatureId))
-                for (const auto& P : UBDAlphaSession::Parameters())
-                    if (P.Id == ParameterId) { Rows->AddSlot().AutoHeight()[Parameter(P)]; break; }
+            AddFeature(TEXT("goalAssist"), TEXT("Goal assist"));
+            if (S->GetFeature(TEXT("goalAssist"))) AddParameter(TEXT("GoalAssistRange"));
         }
         Rows->AddSlot().AutoHeight().Padding(0, 3, 0, 12)
             [SNew(STextBlock).Font(Font(11)).ColorAndOpacity(Muted).AutoWrapText(true)
                 .Text(Txt(S->TuningTab == 1
-                    ? TEXT("Size changes live. Fuse / blast edits apply to new bombs.")
+                    ? TEXT("Size changes live. Charge / fuse / blast edits apply to new bombs.")
                     : TEXT("Changes apply immediately.")))];
         auto Scroll = SNew(SScrollBox).ScrollBarVisibility(EVisibility::Visible)
             .OnUserScrolled_Lambda([this, Tab = S->TuningTab](float Offset) { TuningScroll[Tab] = Offset; })
@@ -815,7 +828,6 @@ private:
 
     TSharedRef<SWidget> Help()
     {
-        const auto Weak = Session;
         const bool bAirport = Session->GetCurrentLevelIndex() == 3;
         FLinearColor HelpColor = Ink;
         HelpColor.A = .94f;
@@ -826,10 +838,7 @@ private:
             [SNew(SVerticalBox)
                 + SVerticalBox::Slot().AutoHeight()[Label(TEXT("WASD  Move    /    Mouse  Aim"), 14)]
                 + SVerticalBox::Slot().AutoHeight().Padding(0, 14, 0, 0)
-                    [SNew(STextBlock).Font(Font(14)).ColorAndOpacity(FLinearColor::White)
-                        .Text_Lambda([Weak]() { return Txt(Weak.IsValid() && Weak->IsSimpleControls()
-                            ? TEXT("Hold L / R: ready    Release L: throw    Release R: drop")
-                            : TEXT("Hold R: ready    Click L: throw / pick up    Release R: drop")); })]
+                    [Label(TEXT("Hold LMB: pick up / charge    Release LMB: throw"), 14)]
                 + SVerticalBox::Slot().AutoHeight().Padding(0, 14, 0, 0)
                     [Label(TEXT("ESC  Pause    /    R  Replay    /    H  Hide UI    /    G  Tuning"), 11, Muted)]
                 + SVerticalBox::Slot().AutoHeight().Padding(0, bAirport ? 14 : 0, 0, 0)

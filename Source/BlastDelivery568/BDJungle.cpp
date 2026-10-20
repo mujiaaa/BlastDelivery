@@ -514,7 +514,7 @@ void ABDJungleHUD::DrawHUD()
             FString::Printf(TEXT("    REGULAR FUSE %.1fs"),Mode->ActiveBomb->GetRemainingFuse());
     else State+=TEXT("    BOMB SLOT READY");
     Text(State,20*S,Canvas->SizeY-65*S,.67f,Yellow);
-    Text(TEXT("WASD move   Mouse aim   Hold RMB draw / release drop   LMB throw   R retry checkpoint   Esc pause"),20*S,Canvas->SizeY-34*S,.61f,Ink);
+    Text(TEXT("WASD move   Mouse aim   Hold LMB charge / release throw   R retry checkpoint   Esc pause"),20*S,Canvas->SizeY-34*S,.61f,Ink);
     auto Label=[&](FVector P,const FString& T,const FLinearColor& C)
     {
         FVector2D Screen;
