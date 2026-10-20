@@ -14,6 +14,7 @@
 
 # Generated receipts and packaged output; keep authored Build/ resources/settings.
 /Build/Receipts/
+/Build/*/FileOpenOrder/
 /PackagedBuilds/
 /StagedBuilds/
 
@@ -47,7 +48,6 @@ __pycache__/
 *.py[cod]
 /tmp/
 /Docs/
-/Scripts/
 
 # Operating system metadata
 .DS_Store

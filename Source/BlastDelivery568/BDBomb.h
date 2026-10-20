@@ -35,6 +35,12 @@ public:
     bool HasCollisionFuseAccelerated() const { return bCollisionFuseAccelerated; }
     float GetFuseBurnRate() const { return bCollisionFuseAccelerated ? Profile.CollisionFuseMultiplier : 1.f; }
     void Explode();
+    void MakeBanana();
+    bool IsBanana() const { return bBanana; }
+    bool IsBeingEaten() const { return Consumer.IsValid(); }
+    ABDCharacter* GetConsumer() const;
+    bool IsRestingBanana() const;
+    bool PickUpBanana(ABDCharacter* Eater);
     bool IsHeld() const { return Holder.IsValid(); }
     float GetRemainingFuse() const { return RemainingFuse; }
     UPROPERTY(VisibleAnywhere) TObjectPtr<USphereComponent> Collision;
@@ -43,6 +49,8 @@ public:
     UPROPERTY(VisibleAnywhere) TObjectPtr<UStaticMeshComponent> Wick;
     UPROPERTY(VisibleAnywhere) TObjectPtr<UProjectileMovementComponent> Movement;
 private:
+    TWeakObjectPtr<ABDCharacter> Consumer;
+    bool bBanana=false;
     TWeakObjectPtr<ABDCharacter> Holder;
     TWeakObjectPtr<ABDCharacter> IgnoredCharacter;
     UPROPERTY() TObjectPtr<UPhysicalMaterial> ContactMaterial;

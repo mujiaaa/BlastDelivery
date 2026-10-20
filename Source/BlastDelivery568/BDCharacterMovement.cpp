@@ -1,5 +1,7 @@
 #include "BDCharacterMovement.h"
 #include "Engine/World.h"
+#include "AIController.h"
+#include "GameFramework/Character.h"
 
 void UBDCharacterMovement::Configure(const FBDPhysicsSettings& InSettings)
 {
@@ -27,7 +29,7 @@ bool UBDCharacterMovement::IsBlastLocked() const
 void UBDCharacterMovement::CalcVelocity(float DeltaTime, float Friction, bool bFluid, float BrakingDeceleration)
 {
     if (!HasValidData() || DeltaTime < MIN_TICK_TIME || HasAnimRootMotion()) return;
-    if (!IsMovingOnGround() && !IsFalling())
+    if ((CharacterOwner && CharacterOwner->GetController<AAIController>()) || (!IsMovingOnGround() && !IsFalling()))
     {
         Super::CalcVelocity(DeltaTime, Friction, bFluid, BrakingDeceleration);
         return;

@@ -45,6 +45,10 @@ public:
     const FBDPhysicsSettings& GetPhysicsSettings() const { return PhysicsSettings; }
     bool ApplyPhysicsSettings(const FBDPhysicsSettings& Settings);
     bool IsPlayground() const { return bAlphaPlayground; }
+    // Levels opt into presentation/assist separately from the playground's
+    // camera and local-multiplayer rules. Existing modes keep their behavior.
+    virtual bool SupportsAlphaGuides() const { return IsPlayground(); }
+    virtual bool SupportsGoalAssist() const { return IsPlayground(); }
     float GetGoalProgress() const { return FMath::Clamp(SettledFor/FMath::Max(.01f,SettleSeconds),0.f,1.f); }
     bool bAlphaPlayground = false;
     void ClearBomb(ABDBomb* Bomb);
@@ -52,6 +56,8 @@ public:
     virtual void RestartTutorial();
     void CompleteTutorial();
     virtual bool IsGameplayInputAllowed() const { return !bCompleted; }
+    virtual void PrepareBomb(ABDBomb* Bomb, ABDCharacter* Holder) {}
+    virtual void ResolveBombExplosion(const FVector& Position, ABDCharacter* Holder, ABDBomb* Bomb);
     virtual void OnBombReleased(ABDBomb* Bomb, bool bThrown) {}
     virtual void OnBombExploded(ABDBomb* Bomb) {}
     virtual void OnCrateBlasted(ABDCrate* BlastedCrate) {}
@@ -59,7 +65,7 @@ public:
     virtual bool RequestSceneReset() { return false; }
     virtual FVector GetHeldBlastVelocity(const ABDCharacter* Player) const;
     static float BlastFalloff(float Distance, float Radius);
-    bool HasBlastLineOfSight(const FVector& From, AActor* Target, AActor* Bomb) const;
+    virtual bool HasBlastLineOfSight(const FVector& From, AActor* Target, AActor* Bomb) const;
 private:
     UPROPERTY() FBDPhysicsSettings PhysicsSettings;
     UPROPERTY() TMap<TObjectPtr<ABDBomb>,TObjectPtr<ABDCharacter>> BombOwners;

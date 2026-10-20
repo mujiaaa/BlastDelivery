@@ -25,6 +25,7 @@ inline UMaterialInstanceDynamic* Tint(UStaticMeshComponent* Mesh, FLinearColor C
 }
 inline void Material(UStaticMeshComponent* Mesh, const TCHAR* Name)
 {
+    if (!IsValid(Mesh)) return;
     const FString Path = FString::Printf(TEXT("/Game/Materials/M_%s.M_%s"), Name, Name);
     if (UMaterialInterface* Mat = LoadObject<UMaterialInterface>(nullptr, *Path))
         Mesh->SetMaterial(0, Mat);

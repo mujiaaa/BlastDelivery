@@ -8,13 +8,13 @@ public class BlastDelivery568 : ModuleRules
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 	
-		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput", "PhysicsCore" });
+		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput", "PhysicsCore", "AIModule", "NavigationSystem" });
 		if (Target.bBuildEditor)
 		{
 			PrivateDependencyModuleNames.AddRange(new string[] { "UnrealEd" });
 		}
 
-		PrivateDependencyModuleNames.AddRange(new string[] { "RenderCore", "Slate", "SlateCore", "ApplicationCore" });
+		PrivateDependencyModuleNames.AddRange(new string[] { "RenderCore", "Slate", "SlateCore", "ApplicationCore", "MeshDescription", "StaticMeshDescription" });
 
 		// Uncomment if you are using Slate UI
 		// PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore" });

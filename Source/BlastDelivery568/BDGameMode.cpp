@@ -23,7 +23,7 @@ void ABDGameMode::BeginPlay()
 {
     Super::BeginPlay();
     if (auto* Session = GetGameInstance<UBDAlphaSession>())
-        PhysicsSettings = bAlphaPlayground ? Session->GetPlaygroundSettings() : FBDPhysicsSettings();
+        PhysicsSettings = Session->GetPlaygroundSettings();
     SyncLegacyParameters();
     GetWorldSettings()->bGlobalGravitySet = true;
     GetWorldSettings()->GlobalGravityZ = -981.f;
@@ -95,6 +95,7 @@ ABDBomb* ABDGameMode::DrawBomb(ABDCharacter* Holder)
             Bomb->Destroy();
             return nullptr;
         }
+        PrepareBomb(Bomb,Holder);
         AssignBomb(Bomb,Holder);
         ++BombsUsed;
     }
@@ -145,7 +146,7 @@ ABDBomb* ABDGameMode::FindNearbyBomb(ABDCharacter* Player) const
     float Best=PhysicsSettings.PickupRadius*100.f;
     for (TActorIterator<ABDBomb> It(GetWorld()); It; ++It)
     {
-        if (It->IsHeld() || It->IsActorBeingDestroyed()) continue;
+        if (It->IsHeld() || It->IsBeingEaten() || It->IsActorBeingDestroyed()) continue;
         const float Distance=FVector::Dist(Player->GetActorLocation(),It->GetActorLocation());
         if (Distance <= Best && HasBlastLineOfSight(Player->GetActorLocation(),*It,Player))
         { Closest=*It; Best=Distance; }
@@ -239,4 +240,9 @@ void ABDGameMode::CompleteTutorial()
         Crate->Mesh->SetPhysicsAngularVelocityInRadians(FVector::ZeroVector);
         Crate->Mesh->SetSimulatePhysics(false);
     }
+}
+
+void ABDGameMode::ResolveBombExplosion(const FVector& Position, ABDCharacter* Holder, ABDBomb* Bomb)
+{
+    ExplodeAt(Position,Holder,Bomb);
 }

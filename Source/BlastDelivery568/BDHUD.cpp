@@ -108,7 +108,7 @@ void ABDHUD::DrawAlphaGuides()
     const auto* Session=GetGameInstance<UBDAlphaSession>();
     const auto* Mode=GetWorld()->GetAuthGameMode<ABDGameMode>();
     auto* PC=Cast<ABDPlayerController>(GetOwningPlayerController());
-    if (!Canvas || !Session || !Mode || !Mode->IsPlayground() || !PC
+    if (!Canvas || !Session || !Mode || !Mode->SupportsAlphaGuides() || !PC
         || !Session->IsHUDVisible() || Session->GetScreen()!=EBDAlphaScreen::Playing) return;
     const float Width=FMath::Max(1.f,4.5f*Canvas->SizeX/FMath::Max(1.f,PC->GetViewWidth()));
     for (TActorIterator<ABDCharacter> PlayerIt(GetWorld());PlayerIt;++PlayerIt)

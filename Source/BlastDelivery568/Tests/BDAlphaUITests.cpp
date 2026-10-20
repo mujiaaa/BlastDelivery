@@ -4,6 +4,7 @@
 #include "Tests/AutomationEditorCommon.h"
 #include "Editor.h"
 #include "../BDAlphaSession.h"
+#include "../BDAlphaMenu.h"
 #include "../BDGameMode.h"
 #include "../BDTutorialGameMode.h"
 #include "../BDPlayerController.h"
@@ -48,6 +49,16 @@ TSharedPtr<SWidget> Find(const TSharedRef<SWidget>& Widget, FName Type, const FS
     return nullptr;
 }
 
+TSharedPtr<SWidget> FindTag(const TSharedRef<SWidget>& Widget, FName Tag)
+{
+    if (!Widget->GetVisibility().IsVisible()) return nullptr;
+    if (Widget->GetTag() == Tag) return Widget;
+    FChildren* Children = Widget->GetChildren();
+    for (int32 I = 0; I < Children->Num(); ++I)
+        if (auto Match = FindTag(Children->GetChildAt(I), Tag)) return Match;
+    return nullptr;
+}
+
 struct FFixture
 {
     FAutomationTestBase* Test = nullptr;
@@ -60,6 +71,21 @@ struct FFixture
     bool bFailed = false;
     float SavedValue = 0.f;
     int32 SavedBombs = 0;
+    TWeakPtr<SWidget> ResultStars;
+    int32 ResultRevision = 0;
+    int32 EarlyThirdStarPixels = 0;
+    TArray<FColor> EarlyResultFrame;
+    FIntVector EarlyResultSize = FIntVector::ZeroValue;
+    TWeakObjectPtr<UWorld> ExitWorld;
+    TWeakObjectPtr<ABDGameMode> ExitMode;
+    float PausedWorldTime = 0.f;
+    float PausedRunTime = 0.f;
+    bool PendingGCheck = false;
+    uint64 GInputFrame = 0;
+    EBDAlphaScreen GExpectedScreen = EBDAlphaScreen::MainMenu;
+    bool GExpectedVisible = false, GExpectedPaused = false;
+    int32 GExpectedBombs = 0;
+    FString GFocusType;
 
     void Refresh()
     {
@@ -88,6 +114,40 @@ struct FFixture
     {
         if (!Test->TestTrue(Message, Condition)) bFailed = true;
         return Condition;
+    }
+    void CheckLevelSymbols()
+    {
+        const TCHAR* Names[] = {TEXT("Controls"), TEXT("CrateGoal"), TEXT("Mirror"), TEXT("Airport"), TEXT("Jungle")};
+        TArray<TArray<FColor>> Images;
+        const auto R = Root();
+        if (!Check(R.IsValid(), TEXT("Level symbols have a visible UI root"))) return;
+        for (int32 I = 0; I < UBDAlphaSession::LevelCount; ++I)
+        {
+            const FName Tag(*FString::Printf(TEXT("AlphaSymbol.%s"), Names[I]));
+            const auto Icon = FindTag(R.ToSharedRef(), Tag);
+            if (!Check(Icon.IsValid(), TEXT("Every level has its own symbolic illustration"))) continue;
+            TArray<FColor> Pixels;
+            FIntVector Size = FIntVector::ZeroValue;
+            if (Check(FSlateApplication::Get().TakeScreenshot(Icon.ToSharedRef(), Pixels, Size), TEXT("Level symbol renders to pixels")))
+            {
+                // Catch the actual regression: different labels/tags must not all
+                // paint the same crate. Compare equal-sized icon crops, not text.
+                for (const auto& Previous : Images)
+                {
+                    int32 Changed = 0;
+                    if (Pixels.Num() == Previous.Num())
+                        for (int32 P = 0; P < Pixels.Num(); ++P)
+                            if (FMath::Abs(int32(Pixels[P].R) - int32(Previous[P].R))
+                                + FMath::Abs(int32(Pixels[P].G) - int32(Previous[P].G))
+                                + FMath::Abs(int32(Pixels[P].B) - int32(Previous[P].B)) > 70) ++Changed;
+                    Check(Pixels.Num() != Previous.Num() || Changed > 40, TEXT("Level illustrations have distinct rendered silhouettes"));
+                }
+                Images.Add(MoveTemp(Pixels));
+            }
+            const auto Card = Widget(TEXT("SButton"), *UBDAlphaSession::LevelTitle(I).ToUpper());
+            Check(Card.IsValid() && Find(Card.ToSharedRef(), TEXT("SAlphaSavedStars")).IsValid(),
+                TEXT("Every card displays its saved three-star record"));
+        }
     }
 
     // Invoke the native control handler, avoiding global cursor capture routing
@@ -124,12 +184,68 @@ struct FFixture
         const FReply Up = Target->OnKeyUp(Geometry, Enter);
         return Check(Down.IsEventHandled() && Up.IsEventHandled(), TEXT("Native control accepts down/up activation"));
     }
-    bool Click(const TCHAR* Text) { return Accept(Widget(TEXT("SButton"), Text)); }
+    FString StateDescription() const
+    {
+        return FString::Printf(TEXT("screen=%d tuning=%d rawTuning=%d paused=%d level=%d completed=%d bombs=%d"),
+            Session ? int32(Session->GetScreen()) : -1, Session && Session->IsTuningVisible(),
+            Session && Session->bTuningVisible, PC && PC->IsPaused(), Session ? Session->GetCurrentLevelIndex() : -1,
+            Mode && Mode->bCompleted, Mode ? Mode->BombsUsed : -1);
+    }
+    bool Click(const TCHAR* Text)
+    {
+        const auto Target = Widget(TEXT("SButton"), Text);
+        if (!Target.IsValid()) Test->AddInfo(FString::Printf(TEXT("Missing button '%s': %s"), Text, *StateDescription()));
+        return Accept(Target);
+    }
     bool Checkbox(const TCHAR* Text) { return Accept(Widget(TEXT("SCheckBox"), Text)); }
     void Key(FKey Key, EInputEvent Event)
     {
         PC->InputKey(FInputKeyEventArgs::CreateSimulated(Key, Event, Event == IE_Released ? 0.f : 1.f));
         PC->PlayerTick(PC->IsPaused() ? 0.f : 1.f / 120.f);
+    }
+    void FocusedG(const TSharedPtr<SWidget>& Target)
+    {
+        if (!Check(Target.IsValid(), TEXT("G shortcut target is a visible native control"))) return;
+        auto& App = FSlateApplication::Get();
+        App.SetUserFocus(0, Target.ToSharedRef(), EFocusCause::SetDirectly);
+        if (!Check(App.GetUserFocusedWidget(0) == Target, TEXT("Keyboard focus is on the requested slider or button"))) return;
+        const bool WasVisible = Session->IsTuningVisible(), WasPaused = PC->IsPaused();
+        const EBDAlphaScreen Screen = Session->GetScreen();
+        const int32 Bombs = Mode->BombsUsed;
+        const FKeyEvent Press(EKeys::G, FModifierKeysState(), 0, false, 0, 0);
+        // Route through Slate's real preview/bubble path, including focused child
+        // controls. Calling Session::ToggleTuning or PC directly would miss the bug.
+        Check(App.ProcessKeyDownEvent(Press), TEXT("Focused G press is consumed by the interface"));
+        Check(Session->IsTuningVisible() != WasVisible, TEXT("One G press toggles tuning exactly once"));
+        const FKeyEvent Repeat(EKeys::G, FModifierKeysState(), 0, true, 0, 0);
+        App.ProcessKeyDownEvent(Repeat);
+        Check(Session->IsTuningVisible() != WasVisible, TEXT("Holding G does not repeatedly toggle tuning"));
+        App.ProcessKeyUpEvent(Press);
+        Check(Session->GetScreen() == Screen && PC->IsPaused() == WasPaused,
+            TEXT("G keeps the current page and its paused or live state"));
+        Check(Mode->BombsUsed == Bombs, TEXT("G shortcut does not create a gameplay bomb"));
+        PendingGCheck = true;
+        GInputFrame = GFrameCounter;
+        GExpectedScreen = Screen; GExpectedVisible = !WasVisible;
+        GExpectedPaused = WasPaused; GExpectedBombs = Bombs;
+        GFocusType = Target->GetType().ToString();
+        UE_LOG(LogTemp, Display, TEXT("BD G immediate focus=%s frame=%llu %s"),
+            *GFocusType, GInputFrame, *StateDescription());
+    }
+    bool CheckGAfterInputFrames()
+    {
+        if (!PendingGCheck) return true;
+        if (GFrameCounter < GInputFrame + 3) return false;
+        PendingGCheck = false;
+        Test->AddInfo(FString::Printf(TEXT("G after three input frames: focus=%s expected(screen=%d tuning=%d paused=%d) actual(%s)"),
+            *GFocusType, int32(GExpectedScreen), GExpectedVisible, GExpectedPaused, *StateDescription()));
+        UE_LOG(LogTemp, Display, TEXT("BD G deferred focus=%s frame=%llu %s"),
+            *GFocusType, GFrameCounter, *StateDescription());
+        Check(Session->GetScreen() == GExpectedScreen && Session->IsTuningVisible() == GExpectedVisible,
+            TEXT("G state survives subsequent player-input and Slate ticks without a deferred second toggle"));
+        Check(PC->IsPaused() == GExpectedPaused && Mode->BombsUsed == GExpectedBombs,
+            TEXT("Deferred G routing preserves pause and creates no gameplay bomb"));
+        return true;
     }
     void Resize(uint32 Width, uint32 Height)
     {
@@ -179,6 +295,29 @@ struct FFixture
         Check(FFileHelper::SaveArrayToFile(PNG, *(Folder / Name)), TEXT("Screenshot saved"));
         Test->AddInfo(FString::Printf(TEXT("Screenshot %s (%dx%d)"), Name, Size.X, Size.Y));
     }
+    bool ResultPixels(TArray<FColor>& Pixels, FIntVector& Size, int32& ThirdStarPixels)
+    {
+        const auto View = World->GetGameViewport()->GetGameViewportWidget();
+        const auto Stars = Widget(TEXT("SAlphaResultsEffect"));
+        if (!Check(View.IsValid() && Stars.IsValid(), TEXT("Result effect has a live viewport"))) return false;
+        if (!Check(FSlateApplication::Get().TakeScreenshot(View.ToSharedRef(), Pixels, Size),
+            TEXT("Animated results composite captured"))) return false;
+        const FGeometry V = View->GetCachedGeometry(), G = Stars->GetCachedGeometry();
+        const FVector2D S = G.GetLocalSize();
+        const FVector2D Center(S.X * 5 / 6, S.Y * .5);
+        const FVector2D Radius(S.Y * .24, S.Y * .24);
+        const FVector2D Scale = FVector2D(Size.X,Size.Y) / V.GetLocalSize();
+        const FVector2D Min = V.AbsoluteToLocal(G.LocalToAbsolute(Center-Radius)) * Scale;
+        const FVector2D Max = V.AbsoluteToLocal(G.LocalToAbsolute(Center+Radius)) * Scale;
+        ThirdStarPixels = 0;
+        for (int32 Y = FMath::Max(0,FMath::CeilToInt(Min.Y)); Y < FMath::Min(Size.Y,FMath::FloorToInt(Max.Y)); ++Y)
+            for (int32 X = FMath::Max(0,FMath::CeilToInt(Min.X)); X < FMath::Min(Size.X,FMath::FloorToInt(Max.X)); ++X)
+            {
+                const FColor C = Pixels[Y*Size.X+X];
+                if (C.R>190 && C.G>135 && C.B>65) ++ThirdStarPixels;
+            }
+        return true;
+    }
 };
 
 using FAction = TFunction<void(FFixture&)>;
@@ -199,13 +338,18 @@ public:
         if (Created == 0) Created = FPlatformTime::Seconds();
         if (F->bFailed) return true;
         F->Refresh();
+        if (F->PendingGCheck && F->World && F->Session && F->Mode && F->PC)
+        {
+            if (!F->CheckGAfterInputFrames()) return false;
+            if (F->bFailed) return true;
+        }
         if (!Entered && F->World && F->Session && F->Mode && F->PC && F->Root())
         {
             Entered = true;
             F->StepStart = FPlatformTime::Seconds();
             F->StepFrame = GFrameCounter;
             F->Test->AddInfo(Name);
-            UE_LOG(LogTemp, Display, TEXT("BD ALPHA UI: %s"), *Name);
+            UE_LOG(LogTemp, Display, TEXT("BD ALPHA UI: %s | %s"), *Name, *F->StateDescription());
             if (Begin) Begin(*F);
         }
         if (Entered && F->World && F->Session && F->Mode && F->PC && Until(*F)) return true;
@@ -234,24 +378,36 @@ bool FBDAlphaMenuFlowTest::RunTest(const FString& Parameters)
     auto Step = [&](const TCHAR* Name, FAction Begin, FCondition Until)
     { FAutomationTestFramework::Get().EnqueueLatentCommand(MakeShared<FStep>(F, Name, MoveTemp(Begin), MoveTemp(Until))); };
 
-    Step(TEXT("Main menu is visible and pauses the game"), [](FFixture& X)
+    Step(TEXT("Main menu is visible and keeps its interactive room running"), [](FFixture& X)
     {
         X.Resize(1280, 720);
         X.Session->ShowMainMenu();
     }, [](FFixture& X)
     {
         if (!X.After(.7)) return false;
-        X.Check(X.PC->IsPaused(), TEXT("Main menu freezes the world"));
+        X.Check(!X.PC->IsPaused(), TEXT("Main menu keeps the physical room running"));
+        const auto BombOutline = FindTag(X.Root().ToSharedRef(), TEXT("AlphaMenu.BombOutline"));
+        if (X.Check(BombOutline.IsValid(), TEXT("Main menu displays the large bomb outline")))
+        {
+            const FVector2D Size = BombOutline->GetCachedGeometry().GetLocalSize();
+            X.Check(Size.X > 1000 && Size.Y > 700, TEXT("Bomb decoration spans the menu instead of a small icon slot"));
+            X.Check(BombOutline->GetVisibility() == EVisibility::HitTestInvisible,
+                TEXT("Bomb outline cannot intercept the interactive room or menu buttons"));
+        }
+        X.Check(!FindTag(X.Root().ToSharedRef(), TEXT("AlphaSymbol.Bomb")).IsValid(),
+            TEXT("The previous small bomb emblem is removed"));
         X.Bounds(); X.Shot(TEXT("01-main-menu.png"));
-        X.Click(TEXT("Start"));
+        X.Click(TEXT("Play"));
         X.Check(X.Session->GetScreen() == EBDAlphaScreen::LevelSelect, TEXT("Start button opens level selection"));
         return true;
     });
-    Step(TEXT("Two level cards and Back are clickable"), {}, [](FFixture& X)
+    Step(TEXT("Five level cards and Back are clickable"), {}, [](FFixture& X)
     {
         if (!X.After()) return false;
         X.Check(X.Widget(TEXT("SButton"), TEXT("TUTORIAL")).IsValid(), TEXT("Tutorial card exists"));
-        X.Check(X.Widget(TEXT("SButton"), TEXT("PLAYGROUND")).IsValid(), TEXT("Playground card exists"));
+        for (int32 I = 0; I < UBDAlphaSession::LevelCount; ++I)
+            X.Check(X.Widget(TEXT("SButton"), *UBDAlphaSession::LevelTitle(I).ToUpper()).IsValid(), TEXT("Every catalog card exists"));
+        X.CheckLevelSymbols();
         X.Bounds(); X.Shot(TEXT("02-level-select.png")); X.Click(TEXT("Back"));
         X.Check(X.Session->GetScreen() == EBDAlphaScreen::MainMenu, TEXT("Back returns to main menu"));
         return true;
@@ -272,6 +428,35 @@ bool FBDAlphaMenuFlowTest::RunTest(const FString& Parameters)
         X.Bounds(); X.Shot(TEXT("03-settings.png")); X.Resize(1024, 640);
         return true;
     });
+    Step(TEXT("Settings opens the shared tuning panel"), {}, [](FFixture& X)
+    {
+        if (!X.After()) return false;
+        X.Click(TEXT("Physics tuning (G)"));
+        return X.Check(X.Session->IsTuningVisible(), TEXT("Settings tuning entry works"));
+    });
+    Step(TEXT("G closes Settings tuning while a tab has keyboard focus"), {}, [](FFixture& X)
+    {
+        if (!X.After()) return false;
+        X.Check(X.PC->IsPaused(), TEXT("Settings keeps the world paused"));
+        X.FocusedG(X.Widget(TEXT("SButton"), TEXT("Player")));
+        X.Check(!X.Session->IsTuningVisible(), TEXT("Focused tab cannot swallow G close"));
+        return true;
+    });
+    Step(TEXT("G opens Settings tuning while the volume slider has focus"), {}, [](FFixture& X)
+    {
+        if (!X.After()) return false;
+        X.FocusedG(X.Widget(TEXT("SSlider")));
+        X.Check(X.Session->IsTuningVisible(), TEXT("Focused volume slider cannot swallow G open"));
+        return true;
+    });
+    Step(TEXT("Settings tuning overlay fits and closes independently"), {}, [](FFixture& X)
+    {
+        if (!X.After()) return false;
+        X.Bounds(); X.Shot(TEXT("03-settings-console.png"));
+        X.Click(TEXT("X"));
+        return X.Check(!X.Session->IsTuningVisible() && X.Session->GetScreen() == EBDAlphaScreen::Settings,
+            TEXT("Closing the panel preserves Settings"));
+    });
     Step(TEXT("Settings fit the resized viewport"), {}, [](FFixture& X)
     {
         if (!X.After(.6)) return false;
@@ -282,12 +467,27 @@ bool FBDAlphaMenuFlowTest::RunTest(const FString& Parameters)
     Step(TEXT("Start then choose Tutorial"), {}, [](FFixture& X)
     {
         if (!X.After()) return false;
-        X.Click(TEXT("Start")); return true;
+        X.Click(TEXT("Play")); return true;
     });
     Step(TEXT("Tutorial card loads the real tutorial"), {}, [](FFixture& X)
     {
         if (!X.After()) return false;
         X.Click(TEXT("TUTORIAL")); return true;
+    });
+    Step(TEXT("Tutorial also supports live tuning"), {}, [](FFixture& X)
+    {
+        if (!X.After(.7) || !Cast<ABDTutorialGameMode>(X.Mode) || !X.PC->GetPawn()) return false;
+        X.Key(EKeys::G, IE_Pressed); X.Key(EKeys::G, IE_Released);
+        return X.Check(X.Session->IsTuningVisible() && !X.PC->IsPaused(), TEXT("Tutorial console opens live"));
+    });
+    Step(TEXT("Tutorial console edits physics without changing its control tutorial"), {}, [](FFixture& X)
+    {
+        if (!X.After()) return false;
+        X.Pointer(X.Widget(TEXT("SSlider")), EKeys::LeftMouseButton, FVector2D(.25, .5));
+        X.Check(!FMath::IsNearlyEqual(X.Session->GetParameter(TEXT("PlayerSize")), 1.f), TEXT("Tutorial size tuning is editable"));
+        X.Click(TEXT("Restore defaults"));
+        X.Click(TEXT("X"));
+        return X.Check(X.Session->GetScreen() == EBDAlphaScreen::Playing, TEXT("Closing tutorial tuning keeps gameplay active"));
     });
     Step(TEXT("Tutorial starts Simple with a minimal HUD"), {}, [](FFixture& X)
     {
@@ -299,10 +499,58 @@ bool FBDAlphaMenuFlowTest::RunTest(const FString& Parameters)
         X.Check(X.Session->GetScreen() == EBDAlphaScreen::Pause, TEXT("HUD pause button works"));
         return true;
     });
+    Step(TEXT("G opens physics tuning directly from Pause"), {}, [](FFixture& X)
+    {
+        if (!X.After()) return false;
+        X.PausedWorldTime = X.World->GetTimeSeconds();
+        X.PausedRunTime = X.Mode->ElapsedSeconds;
+        X.FocusedG(X.Widget(TEXT("SButton"), TEXT("Resume")));
+        X.Check(X.Session->IsTuningVisible() && X.Session->GetScreen() == EBDAlphaScreen::Pause && X.PC->IsPaused(),
+            TEXT("G opens the panel on Pause without resuming"));
+        return true;
+    });
+    Step(TEXT("G closes a focused tuning tab and remains on Pause"), {}, [](FFixture& X)
+    {
+        if (!X.After()) return false;
+        X.Bounds(); X.Shot(TEXT("05-pause-tuning.png"));
+        X.FocusedG(X.Widget(TEXT("SButton"), TEXT("Player")));
+        X.Check(!X.Session->IsTuningVisible() && X.Session->GetScreen() == EBDAlphaScreen::Pause && X.PC->IsPaused(),
+            TEXT("Focused tab G closes only the panel on Pause"));
+        X.Check(FMath::IsNearlyEqual(X.World->GetTimeSeconds(), X.PausedWorldTime, .001f)
+            && FMath::IsNearlyEqual(X.Mode->ElapsedSeconds, X.PausedRunTime, .001f),
+            TEXT("Direct paused tuning leaves world and run clocks frozen"));
+        return true;
+    });
     Step(TEXT("Pause overlay contains the expected actions"), {}, [](FFixture& X)
     {
         if (!X.After()) return false;
+        for (const TCHAR* Caption : {TEXT("Resume"), TEXT("Restart"), TEXT("Settings"), TEXT("Exit")})
+            X.Check(X.Widget(TEXT("SButton"), Caption).IsValid(), TEXT("Pause has each of its four requested actions"));
+        X.Check(!X.Widget(TEXT("SButton"), TEXT("Main menu")).IsValid(), TEXT("Pause Exit replaces Main menu"));
         X.Bounds(); X.Shot(TEXT("05-pause.png")); X.Click(TEXT("Settings")); return true;
+    });
+    Step(TEXT("G opens tuning inside the paused tutorial Settings"), {}, [](FFixture& X)
+    {
+        if (!X.After()) return false;
+        X.PausedWorldTime = X.World->GetTimeSeconds();
+        X.PausedRunTime = X.Mode->ElapsedSeconds;
+        X.Check(X.PC->IsPaused(), TEXT("Tutorial remains paused in Settings"));
+        X.FocusedG(X.Widget(TEXT("SSlider")));
+        X.Check(X.Session->IsTuningVisible(), TEXT("G opens tuning from paused Settings"));
+        return true;
+    });
+    Step(TEXT("G closes a focused physics slider without resuming the tutorial"), {}, [](FFixture& X)
+    {
+        if (!X.After()) return false;
+        X.Bounds(); X.Shot(TEXT("05-paused-settings-tuning.png"));
+        const auto Panel = X.Widget(TEXT("SBorder"), TEXT("PHYSICS TUNING [G]"));
+        X.Check(Panel.IsValid(), TEXT("Paused Settings contains the physics tuning panel"));
+        if (Panel.IsValid()) X.FocusedG(Find(Panel.ToSharedRef(), TEXT("SSlider")));
+        X.Check(!X.Session->IsTuningVisible() && X.PC->IsPaused(), TEXT("Closing tuning preserves paused Settings"));
+        X.Check(FMath::IsNearlyEqual(X.World->GetTimeSeconds(), X.PausedWorldTime, .001f)
+            && FMath::IsNearlyEqual(X.Mode->ElapsedSeconds, X.PausedRunTime, .001f),
+            TEXT("Neither world simulation nor run timer advances during paused tuning"));
+        return true;
     });
     Step(TEXT("Settings Back preserves pause origin"), {}, [](FFixture& X)
     {
@@ -341,15 +589,53 @@ bool FBDAlphaMenuFlowTest::RunTest(const FString& Parameters)
         if (!X.After()) return false;
         X.Click(TEXT("II")); return true;
     });
-    Step(TEXT("Pause Level select action"), {}, [](FFixture& X)
+    Step(TEXT("Pause Exit returns directly to level selection"), {}, [](FFixture& X)
     {
         if (!X.After()) return false;
-        X.Click(TEXT("Level select")); return true;
+        X.Click(TEXT("Exit"));
+        X.Check(X.Session->GetScreen() == EBDAlphaScreen::LevelSelect, TEXT("Exit skips Main menu and opens level selection"));
+        return true;
     });
     Step(TEXT("Playground card loads the Alpha playground"), {}, [](FFixture& X)
     {
         if (!X.After()) return false;
         X.Click(TEXT("PLAYGROUND")); return true;
+    });
+    Step(TEXT("Playground console starts hidden and opens without pausing"), {}, [](FFixture& X)
+    {
+        if (!X.After(.8) || !X.Session->IsPlayground() || !X.Mode->Crate) return false;
+        X.Check(!X.Session->IsTuningVisible(), TEXT("Console starts closed"));
+        X.Key(EKeys::G, IE_Pressed); X.Key(EKeys::G, IE_Released);
+        X.Check(X.Session->IsTuningVisible() && !X.PC->IsPaused(), TEXT("G opens a live console"));
+        return true;
+    });
+    Step(TEXT("G closes live tuning with a physics slider focused"), {}, [](FFixture& X)
+    {
+        if (!X.After()) return false;
+        X.FocusedG(X.Widget(TEXT("SSlider")));
+        X.Check(!X.Session->IsTuningVisible() && !X.PC->IsPaused(), TEXT("Live slider focus does not block G close"));
+        return true;
+    });
+    Step(TEXT("G reopens live tuning with a HUD button focused"), {}, [](FFixture& X)
+    {
+        if (!X.After()) return false;
+        X.FocusedG(X.Widget(TEXT("SButton"), TEXT("?")));
+        X.Check(X.Session->IsTuningVisible(), TEXT("HUD focus does not block G open"));
+        return true;
+    });
+    Step(TEXT("G closes live tuning with a tab focused"), {}, [](FFixture& X)
+    {
+        if (!X.After()) return false;
+        X.FocusedG(X.Widget(TEXT("SButton"), TEXT("Bomb")));
+        X.Check(!X.Session->IsTuningVisible(), TEXT("Live tab focus does not block G close"));
+        return true;
+    });
+    Step(TEXT("G reopens tuning from the gameplay viewport"), {}, [](FFixture& X)
+    {
+        if (!X.After()) return false;
+        X.Key(EKeys::G, IE_Pressed); X.Key(EKeys::G, IE_Released);
+        X.Check(X.Session->IsTuningVisible() && !X.PC->IsPaused(), TEXT("Viewport G binding still works after Slate focus changes"));
+        return true;
     });
     Step(TEXT("Playground player panel and parameter input"), {}, [](FFixture& X)
     {
@@ -368,7 +654,7 @@ bool FBDAlphaMenuFlowTest::RunTest(const FString& Parameters)
         if (!X.After()) return false;
         const auto R = X.Root();
         X.Check(R && !HasText(R.ToSharedRef(), TEXT("Collision fuse speed")), TEXT("Fast fuse slider initially hidden"));
-        X.Checkbox(TEXT("Faster fuse on impact"));
+        X.Checkbox(TEXT("Short fuse on impact"));
         X.Check(X.Session->GetFeature(TEXT("fastFuse")), TEXT("Fast fuse checkbox enabled")); return true;
     });
     Step(TEXT("Expanded bomb panel stays within the viewport"), {}, [](FFixture& X)
@@ -390,7 +676,7 @@ bool FBDAlphaMenuFlowTest::RunTest(const FString& Parameters)
         const auto R = X.Root();
         X.Check(R && HasText(R.ToSharedRef(), TEXT("Goal assist range")), TEXT("Goal range slider appears"));
         X.Bounds(); X.Shot(TEXT("09-playground-crate.png"));
-        X.Pointer(X.Widget(TEXT("SBorder"), TEXT("PLAYTEST")), EKeys::RightMouseButton, FVector2D(.03, .5));
+        X.Pointer(X.Widget(TEXT("SBorder"), TEXT("PHYSICS TUNING [G]")), EKeys::RightMouseButton, FVector2D(.03, .5));
         X.Check(X.Mode->BombsUsed == X.SavedBombs, TEXT("RMB on panel does not draw a bomb"));
         X.Key(EKeys::H, IE_Pressed); X.Key(EKeys::H, IE_Released); return true;
     });
@@ -398,9 +684,17 @@ bool FBDAlphaMenuFlowTest::RunTest(const FString& Parameters)
     {
         if (!X.After()) return false;
         X.Check(!X.Session->IsHUDVisible(), TEXT("HUD hidden"));
-        X.Check(!X.Widget(TEXT("SButton"), TEXT("Tuning")), TEXT("HUD controls absent in clean view"));
+        X.Check(X.Widget(TEXT("SButton"), TEXT("Restore defaults")).IsValid(), TEXT("Console survives hidden HUD"));
         X.Shot(TEXT("10-playground-clean.png"));
         X.Key(EKeys::Escape, IE_Pressed); X.Key(EKeys::Escape, IE_Released); return true;
+    });
+    Step(TEXT("First Escape closes the console before pausing"), {}, [](FFixture& X)
+    {
+        if (!X.After()) return false;
+        X.Check(!X.Session->IsTuningVisible() && X.Session->GetScreen() == EBDAlphaScreen::Playing,
+            TEXT("Escape closes live tuning only"));
+        X.Key(EKeys::Escape, IE_Pressed); X.Key(EKeys::Escape, IE_Released);
+        return true;
     });
     Step(TEXT("Pause is usable while HUD is hidden"), {}, [](FFixture& X)
     {
@@ -408,13 +702,55 @@ bool FBDAlphaMenuFlowTest::RunTest(const FString& Parameters)
         X.Check(X.Widget(TEXT("SButton"), TEXT("Resume")).IsValid(), TEXT("Pause survives hidden HUD"));
         X.Click(TEXT("Resume"));
         // Result fixtures validate the menu, not the physical delivery condition.
-        X.Mode->BombsUsed = 7; X.Mode->ElapsedSeconds = 83.f; X.Mode->bCompleted = true;
+        X.Mode->BombsUsed = 12; X.Mode->ElapsedSeconds = 83.f; X.Mode->bCompleted = true;
         return true;
     });
-    Step(TEXT("Completion routes to results and Replay reloads"), {}, [](FFixture& X)
+    Step(TEXT("Capture results charging and bomb rain at 1.2 seconds"), {}, [](FFixture& X)
     {
-        if (!X.After() || X.Session->GetScreen() != EBDAlphaScreen::Results) return false;
-        X.Bounds(); X.Shot(TEXT("11-results.png")); X.Click(TEXT("Replay")); return true;
+        if (!X.After(1.2) || X.Session->GetScreen() != EBDAlphaScreen::Results) return false;
+        X.Check(X.Session->GetResultBombsUsed()==12, TEXT("Rain uses all twelve fixture bombs"));
+        X.Check(X.Session->GetResultStarMask()==7, TEXT("Fixture earns all three star slots"));
+        const int32 TargetSeconds=FMath::FloorToInt(X.Session->GetResultTimeTarget());
+        X.Check(HasText(X.Root().ToSharedRef(), FString::Printf(TEXT("TARGET  %d:%02d"),TargetSeconds/60,TargetSeconds%60)),
+            TEXT("Results explain the time-star target"));
+        X.Check(HasText(X.Root().ToSharedRef(), FString::Printf(TEXT("TARGET  %d OR FEWER"),X.Session->GetResultBombTarget())),
+            TEXT("Results explain the bomb-star target"));
+        X.ResultStars=X.Widget(TEXT("SAlphaResultsEffect"));
+        X.ResultRevision=X.Session->GetResultsRevision();
+        X.ResultPixels(X.EarlyResultFrame,X.EarlyResultSize,X.EarlyThirdStarPixels);
+        X.Bounds(); X.Shot(TEXT("11-results-charging-1.2s.png"));
+        return true;
+    });
+    Step(TEXT("Capture filled stars and deposited bomb pile at four seconds"), {}, [](FFixture& X)
+    {
+        if (!X.After(2.8) || X.Session->GetScreen()!=EBDAlphaScreen::Results) return false;
+        X.Check(X.ResultStars.Pin()==X.Widget(TEXT("SAlphaResultsEffect")),
+            TEXT("Normal UI ticks retain the same animation widget"));
+        X.Check(X.ResultRevision==X.Session->GetResultsRevision(), TEXT("Result revision stays stable while effects animate"));
+        TArray<FColor> Late;
+        FIntVector Size=FIntVector::ZeroValue;
+        int32 FilledThirdStarPixels=0;
+        if (X.ResultPixels(Late,Size,FilledThirdStarPixels))
+        {
+            X.Check(FilledThirdStarPixels>X.EarlyThirdStarPixels+30,
+                TEXT("Third star visibly fills between charging and completed frames"));
+            if (Size==X.EarlyResultSize && Late.Num()==X.EarlyResultFrame.Num())
+            {
+                int64 Difference=0, Samples=0;
+                for (int32 Y=Size.Y*3/4; Y<Size.Y; Y+=2)
+                    for (int32 Px=0; Px<Size.X; Px+=2)
+                    {
+                        const int32 I=Y*Size.X+Px;
+                        const FColor A=X.EarlyResultFrame[I], B=Late[I];
+                        Difference+=FMath::Abs(int32(A.R)-int32(B.R))+FMath::Abs(int32(A.G)-int32(B.G))+FMath::Abs(int32(A.B)-int32(B.B));
+                        ++Samples;
+                    }
+                X.Check(Samples>0 && double(Difference)/Samples>3,
+                    TEXT("Foreground bomb rain visibly deposits into the bottom pile"));
+            }
+        }
+        X.Bounds(); X.Shot(TEXT("11-results-filled-4s.png"));
+        X.Click(TEXT("Replay")); return true;
     });
     Step(TEXT("Replay clears completion and restores a playable session"), {}, [](FFixture& X)
     {
@@ -423,13 +759,64 @@ bool FBDAlphaMenuFlowTest::RunTest(const FString& Parameters)
         X.Check(X.Mode->BombsUsed == 0, TEXT("Replay resets usage"));
         X.Mode->bCompleted = true; return true;
     });
-    Step(TEXT("Last level result returns to level selection"), {}, [](FFixture& X)
+    for (int32 Index = 2; Index < UBDAlphaSession::LevelCount; ++Index)
+    {
+        Step(TEXT("Result Next level advances through the catalog"), {}, [](FFixture& X)
+        {
+            if (!X.After() || X.Session->GetScreen() != EBDAlphaScreen::Results) return false;
+            X.Click(TEXT("Next level  >")); return true;
+        });
+        Step(TEXT("New level has a live console and can show results"), {}, [Index](FFixture& X)
+        {
+            if (!X.After(.8) || X.Session->GetScreen() != EBDAlphaScreen::Playing || !X.PC->GetPawn()) return false;
+            X.Check(X.Session->GetCurrentLevelIndex() == Index, TEXT("Expected catalog level loaded"));
+            X.Check(!X.Session->IsTuningVisible(), TEXT("New scene console starts closed"));
+            X.Key(EKeys::G, IE_Pressed); X.Key(EKeys::G, IE_Released);
+            X.Check(X.Session->IsTuningVisible() && !X.PC->IsPaused(), TEXT("Console works in every added scene"));
+            return true;
+        });
+        Step(TEXT("Capture added level console"), {}, [Index](FFixture& X)
+        {
+            if (!X.After()) return false;
+            X.Check(X.Widget(TEXT("SAlphaAirportFeedback")).IsValid() == (Index == 3),
+                TEXT("Airport-only status feedback does not alter other levels"));
+            X.Bounds(); X.Shot(*FString::Printf(TEXT("12-level-%d-console.png"), Index + 1));
+            X.Key(EKeys::Escape, IE_Pressed); X.Key(EKeys::Escape, IE_Released);
+            X.Mode->BombsUsed = 16; X.Mode->ElapsedSeconds = 102; X.Mode->bCompleted = true;
+            return true;
+        });
+        Step(TEXT("Results stars and foreground bomb rain are present"), {}, [Index](FFixture& X)
+        {
+            if (!X.After(1.25) || X.Session->GetScreen() != EBDAlphaScreen::Results) return false;
+            X.Check(X.Session->GetResultBombsUsed() == 16, TEXT("Result captures the real usage count"));
+            X.Check(X.Widget(TEXT("SAlphaResultsEffect")).IsValid(), TEXT("Animated result effects are attached"));
+            X.Check(X.Widget(TEXT("SButton"), TEXT("Replay")).IsValid(), TEXT("Replay remains present under foreground rain"));
+            X.Bounds(); X.Shot(*FString::Printf(TEXT("13-level-%d-results.png"), Index + 1));
+            return true;
+        });
+    }
+    Step(TEXT("Results Exit returns to level selection rather than Main menu"), {}, [](FFixture& X)
     {
         if (!X.After() || X.Session->GetScreen() != EBDAlphaScreen::Results) return false;
-        X.Click(TEXT("Level select"));
-        X.Check(X.Session->GetScreen() == EBDAlphaScreen::LevelSelect, TEXT("Result Level select action works")); return true;
+        X.Check(!X.Session->HasNextLevel(), TEXT("Jungle is the fifth and final catalog entry"));
+        X.Check(X.Widget(TEXT("SButton"), TEXT("Level select")).IsValid(), TEXT("Final result still offers Level select instead of Next"));
+        X.Check(!X.Widget(TEXT("SButton"), TEXT("Main menu")).IsValid(), TEXT("Results Exit replaces Main menu"));
+        X.ExitWorld = X.World; X.ExitMode = X.Mode;
+        X.Click(TEXT("Exit"));
+        X.Check(X.Session->GetScreen() == EBDAlphaScreen::LevelSelect, TEXT("Result Exit immediately selects the level-selection page"));
+        return true;
     });
-
+    Step(TEXT("Results Exit does not asynchronously load the main-menu room"), {}, [](FFixture& X)
+    {
+        if (!X.After(.8)) return false;
+        X.Check(X.Session->GetScreen() == EBDAlphaScreen::LevelSelect && X.PC->IsPaused(),
+            TEXT("Results Exit remains on level selection after subsequent frames"));
+        X.Check(X.World == X.ExitWorld.Get() && X.Mode == X.ExitMode.Get() && !X.Mode->IsA<ABDAlphaMenuGameMode>(),
+            TEXT("Exit preserves the stopped level and never loads the interactive main-menu world"));
+        X.Check(X.Widget(TEXT("SButton"), TEXT("AIRPORT")).IsValid() && X.Widget(TEXT("SButton"), TEXT("JUNGLE")).IsValid(),
+            TEXT("Results Exit presents usable level cards"));
+        return true;
+    });
     ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());
     return true;
 }
@@ -494,8 +881,11 @@ struct FButtonFeedback
         const auto& Transform = Wrapper->GetRenderTransform();
         X.Check(!Transform.IsSet() || TransformPoint(Transform.GetValue(), FVector2f::ZeroVector).IsNearlyZero(.001f),
             TEXT("Feedback uses a scale transform rather than an accidental translation"));
-        X.Check(X.PC->IsPaused() && FMath::IsNearlyEqual(X.World->GetTimeSeconds(), WorldTime, .001f),
-            TEXT("Button feedback advances while game time is paused"));
+        if (Screen == EBDAlphaScreen::MainMenu)
+            X.Check(!X.PC->IsPaused(), TEXT("Main menu interaction keeps its physics room live"));
+        else
+            X.Check(X.PC->IsPaused() && FMath::IsNearlyEqual(X.World->GetTimeSeconds(), WorldTime, .001f),
+                TEXT("Button feedback advances while game time is paused"));
         X.Check(X.Session->GetScreen() == Screen && X.Mode->BombsUsed == Bombs && !X.Mode->ActiveBomb,
             TEXT("Hover, focus, and cancelled presses neither activate a menu action nor create a bomb"));
     }
@@ -608,11 +998,11 @@ bool FBDAlphaButtonFeedbackTest::RunTest(const FString& Parameters)
         });
     };
 
-    Exercise(TEXT("Start"), TEXT("20-feedback-main"));
+    Exercise(TEXT("Play"), TEXT("20-feedback-main"));
     Step(TEXT("Start still activates once after feedback interactions"), {}, [](FFixture& X)
     {
         if (!X.After()) return false;
-        X.Click(TEXT("Start"));
+        X.Click(TEXT("Play"));
         return X.Check(X.Session->GetScreen() == EBDAlphaScreen::LevelSelect, TEXT("Start routes to level selection"));
     });
     Step(TEXT("Wait for the real level cards"), {}, [](FFixture& X) { return X.After(.4); });

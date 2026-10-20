@@ -18,9 +18,11 @@ public:
     virtual void Tick(float DeltaSeconds) override;
     virtual void OnConstruction(const FTransform& Transform) override;
     void ApplyBlast(const FVector& Origin, float Strength);
+    void ApplyExternalAcceleration(const FVector& Acceleration);
     void Respawn();
     bool ApplySettings(const FBDPhysicsSettings& Settings);
     bool IsRecovering() const { return bRecovering; }
+    void SetRespawnCheckpoint(FVector WorldPosition);
     FVector GetSpawnPosition() const { return SpawnTransform.GetLocation(); }
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly) TObjectPtr<UStaticMeshComponent> Mesh;
     UPROPERTY(EditAnywhere, Category="Physics") float MassKg = 30.f;

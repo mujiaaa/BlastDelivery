@@ -1,5 +1,6 @@
 #include "BDLocalMultiplayer.h"
 #include "BDAlphaSession.h"
+#include "BDAlphaMenu.h"
 #include "BDBomb.h"
 #include "BDCharacter.h"
 #include "BDGameMode.h"
@@ -46,7 +47,7 @@ UBDLocalMultiplayer::UBDLocalMultiplayer()
 bool UBDLocalMultiplayer::IsPlayground() const
 {
     const auto* Mode=GetWorld() ? GetWorld()->GetAuthGameMode<ABDGameMode>() : nullptr;
-    return Mode && Mode->IsPlayground();
+    return Mode && Mode->IsPlayground() && !Mode->IsA<ABDAlphaMenuGameMode>();
 }
 void UBDLocalMultiplayer::BeginPlay()
 {
@@ -182,7 +183,7 @@ bool UBDLocalMultiplayer::RouteInput(const FInputKeyEventArgs& Event)
         if (Session && (Session->GetScreen()==EBDAlphaScreen::Playing || Session->GetScreen()==EBDAlphaScreen::Pause)) Session->TogglePause();
         return true;
     }
-    if (Session && Session->GetScreen()!=EBDAlphaScreen::Playing)
+    if (Session && (Session->GetScreen()!=EBDAlphaScreen::Playing || Session->IsTuningVisible()))
     {
         if (Event.Event==IE_Pressed && Event.Key==EKeys::Gamepad_FaceButton_Right) { Session->Back(); return true; }
         // Still record release/neutral while paused; menu focus uses native Slate.

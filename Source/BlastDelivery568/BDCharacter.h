@@ -16,12 +16,12 @@ public:
     ABDCharacter(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
     virtual void BeginPlay() override;
     virtual void Tick(float DeltaSeconds) override;
-    void MoveInRoom(const FVector2D& Input);
-    void FacePoint(const FVector& Point);
+    virtual void MoveInRoom(const FVector2D& Input);
+    virtual void FacePoint(const FVector& Point);
     void DrawBomb();
     void DropBomb();
     void ThrowBomb();
-    void Respawn();
+    virtual void Respawn();
     bool ApplySettings(const FBDPhysicsSettings& Settings);
     void ApplyBlastVelocity(const FVector& VelocityChange);
     bool IsRecovering() const { return bRecovering || !bLocalConnected; }
@@ -29,18 +29,19 @@ public:
     void SetLocalPlayerConnected(bool bConnected,const FVector& SpawnPosition);
     int32 GetLocalPlayerSeat() const { return LocalPlayerSeat; }
     FVector GetBombPosition() const;
+    void SetRespawnCheckpoint(FVector WorldPosition);
     FVector GetSpawnPosition() const { return SpawnTransform.GetLocation(); }
     float GetSpawnFloorHeight() const { return SpawnFloorZ; }
     UPROPERTY(EditAnywhere, Category="Movement") float WalkSpeed = 520.f;
 private:
-    UPROPERTY() TObjectPtr<USceneComponent> VisualRoot;
-    UPROPERTY() TArray<TObjectPtr<UStaticMeshComponent>> BodyParts;
-    UPROPERTY() TArray<TObjectPtr<UStaticMeshComponent>> Eyes;
-    UPROPERTY() TArray<TObjectPtr<UStaticMeshComponent>> LightParts;
-    UPROPERTY() TObjectPtr<UStaticMeshComponent> LeftFoot;
-    UPROPERTY() TObjectPtr<UStaticMeshComponent> RightFoot;
-    UPROPERTY() TObjectPtr<UStaticMeshComponent> LeftHand;
-    UPROPERTY() TObjectPtr<UStaticMeshComponent> RightHand;
+    UPROPERTY(Transient) TObjectPtr<USceneComponent> VisualRoot;
+    UPROPERTY(Transient) TArray<TObjectPtr<UStaticMeshComponent>> BodyParts;
+    UPROPERTY(Transient) TArray<TObjectPtr<UStaticMeshComponent>> Eyes;
+    UPROPERTY(Transient) TArray<TObjectPtr<UStaticMeshComponent>> LightParts;
+    UPROPERTY(Transient) TObjectPtr<UStaticMeshComponent> LeftFoot;
+    UPROPERTY(Transient) TObjectPtr<UStaticMeshComponent> RightFoot;
+    UPROPERTY(Transient) TObjectPtr<UStaticMeshComponent> LeftHand;
+    UPROPERTY(Transient) TObjectPtr<UStaticMeshComponent> RightHand;
     FTransform SpawnTransform;
     FBDPhysicsSettings Profile;
     FTimerHandle RespawnTimer;

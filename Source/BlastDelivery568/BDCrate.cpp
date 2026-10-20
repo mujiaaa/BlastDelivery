@@ -208,3 +208,20 @@ void ABDCrate::FinishRespawn()
     StillTime = 0.f;
     bRecovering = false;
 }
+
+void ABDCrate::SetRespawnCheckpoint(FVector WorldPosition)
+{
+    SpawnTransform.SetLocation(WorldPosition);
+    SpawnFloorZ=WorldPosition.Z-(60.f*GetActorScale3D().Z/1.2f);
+}
+
+void ABDCrate::ApplyExternalAcceleration(const FVector& Acceleration)
+{
+    if (bRecovering || Acceleration.IsNearlyZero() || Acceleration.ContainsNaN()) return;
+    // Conveyors / fans are intentional forces, so release the parked-cargo lock
+    // before Chaos integrates this frame. Ordinary character contact still cannot push cargo.
+    StillTime=0.f;
+    Mesh->SetSimulatePhysics(true);
+    Mesh->WakeAllRigidBodies();
+    Mesh->AddForce(Acceleration*Mesh->GetMass());
+}

@@ -59,6 +59,9 @@ ABDBomb::ABDBomb()
     Collision->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
     Collision->SetNotifyRigidBodyCollision(true);
     Collision->SetUseCCD(true);
+    // A moving throwable is not level geometry. In particular, banana bait
+    // must not carve a hole in the navigation surface at its own destination.
+    Collision->SetCanEverAffectNavigation(false);
     Collision->SetLinearDamping(.8f);
     Collision->SetAngularDamping(.5f);
     Collision->CanCharacterStepUpOn = ECB_No;
@@ -108,7 +111,7 @@ bool ABDBomb::Ignite(ABDCharacter* Character, float Fuse)
     if (const auto* Mode = GetWorld()->GetAuthGameMode<ABDGameMode>())
     {
         Profile = Mode->GetPhysicsSettings();
-        Profile.bFastCollisionFuse = Mode->IsPlayground() && Profile.bFastCollisionFuse;
+
     }
     Profile.CollisionFuseMultiplier = FMath::Clamp(Profile.CollisionFuseMultiplier,2.f,20.f);
     Holder = Character;
@@ -180,7 +183,14 @@ void ABDBomb::FollowHolder()
 void ABDBomb::Tick(float DeltaSeconds)
 {
     Super::Tick(DeltaSeconds);
+    if (Consumer.IsValid())
+    {
+        SetActorLocation(Consumer->GetBombPosition()+FVector(0,0,3.f*FMath::Sin(GetWorld()->GetTimeSeconds()*5.f)));
+        SetActorRotation(Consumer->GetActorRotation());
+        return;
+    }
     if (bExploded) return;
+    if (auto* Game=GetWorld()->GetAuthGameMode<ABDGameMode>()) Game->PrepareBomb(this,Holder.Get());
     if (IsHeld()) FollowHolder();
     else
     {
@@ -192,6 +202,7 @@ void ABDBomb::Tick(float DeltaSeconds)
             if (Distance > GetWorldRadius()+4.f || IgnoredCharacter->IsRecovering()) ClearCharacterIgnore();
         }
     }
+    if (bBanana) return;
     RemainingFuse = FMath::Max(0.f,RemainingFuse-DeltaSeconds*GetFuseBurnRate());
     UpdatePresentation();
     if (RemainingFuse <= 0.f) Explode();
@@ -222,6 +233,7 @@ void ABDBomb::Release(bool bThrow, bool bNotifyAction)
 {
     if (!Holder.IsValid()) return;
     ABDCharacter* Character = Holder.Get();
+    if (auto* Mode=GetWorld()->GetAuthGameMode<ABDGameMode>()) Mode->PrepareBomb(this,Character);
     FollowHolder();
     FVector Position = GetActorLocation();
     if (!bThrow)
@@ -258,7 +270,7 @@ void ABDBomb::Release(bool bThrow, bool bNotifyAction)
 bool ABDBomb::TryPickup(ABDCharacter* Character)
 {
     auto* Mode = GetWorld()->GetAuthGameMode<ABDGameMode>();
-    if (!IsValid(Character) || Character->IsRecovering() || IsHeld() || bExploded || RemainingFuse<=0.f
+    if (!IsValid(Character) || Character->IsRecovering() || IsHeld() || IsBeingEaten() || bExploded || (!bBanana && RemainingFuse<=0.f)
         || !Mode || !Mode->IsGameplayInputAllowed()) return false;
     if (FVector::Dist(GetActorLocation(),Character->GetActorLocation()) > Mode->GetPhysicsSettings().PickupRadius*100.f
         || !Mode->HasBlastLineOfSight(Character->GetActorLocation(),this,Character)) return false;
@@ -309,12 +321,14 @@ void ABDBomb::OnSolidHit(UPrimitiveComponent* HitComponent,AActor* OtherActor,
 }
 void ABDBomb::Explode()
 {
-    if (bExploded) return;
+    if (bExploded || bBanana) return;
+    if (auto* Game=GetWorld()->GetAuthGameMode<ABDGameMode>()) Game->PrepareBomb(this,Holder.Get());
+    if (bBanana) return;
     if (IsHeld()) FollowHolder();
     bExploded = true;
     if (auto* Mode = GetWorld()->GetAuthGameMode<ABDGameMode>())
     {
-        Mode->ExplodeAt(GetActorLocation(),Holder.Get(),this);
+        Mode->ResolveBombExplosion(GetActorLocation(),Holder.Get(),this);
         Mode->OnBombExploded(this);
         Mode->ClearBomb(this);
     }
@@ -327,3 +341,34 @@ void ABDBomb::EndPlay(const EEndPlayReason::Type Reason)
     if (auto* Mode = GetWorld()->GetAuthGameMode<ABDGameMode>()) Mode->ClearBomb(this);
     Super::EndPlay(Reason);
 }
+
+void ABDBomb::MakeBanana()
+{
+    if (bBanana) return;
+    bBanana=true;
+    BDVisuals::Material(Mesh,TEXT("JungleBanana"));
+    Mesh->SetRelativeScale3D(FVector(.56,.22,.26));
+    Mesh->SetRelativeRotation(FRotator(25,0,0));
+    Wick->SetVisibility(false); FuseTip->SetVisibility(false);
+}
+bool ABDBomb::IsRestingBanana() const
+{
+    if (!bBanana || IsHeld() || IsBeingEaten() || IsActorBeingDestroyed()) return false;
+    if (Collision->GetPhysicsLinearVelocity().SizeSquared()>FMath::Square(30.f)) return false;
+    FHitResult Hit; FCollisionQueryParams Q(SCENE_QUERY_STAT(BananaSupport),false,this);
+    return GetWorld()->LineTraceSingleByChannel(Hit,GetActorLocation(),GetActorLocation()-FVector(0,0,GetWorldRadius()+10.f),ECC_Visibility,Q) && Hit.ImpactNormal.Z>.4f;
+}
+bool ABDBomb::PickUpBanana(ABDCharacter* Eater)
+{
+    if (!IsValid(Eater) || !IsRestingBanana()) return false;
+    Consumer=Eater; SetOwner(Eater);
+    Collision->SetPhysicsLinearVelocity(FVector::ZeroVector);
+    Collision->SetSimulatePhysics(false);
+    Collision->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+    Movement->Velocity=FVector::ZeroVector;
+    AddTickPrerequisiteActor(Eater);
+    if (auto* Mode=GetWorld()->GetAuthGameMode<ABDGameMode>()) Mode->ClearBomb(this);
+    return true;
+}
+
+ABDCharacter* ABDBomb::GetConsumer() const { return Consumer.Get(); }

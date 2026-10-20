@@ -13,7 +13,7 @@
 float UBDAlphaViewportClient::PlayfieldFraction(const UWorld* World, float Width, float Height)
 {
     const auto* Session=World ? World->GetGameInstance<UBDAlphaSession>() : nullptr;
-    if (!Session || !Session->IsPlayground() || !Session->IsHUDVisible() || !Session->bTuningVisible
+    if (!Session || !Session->IsTuningVisible()
         || Session->GetScreen()!=EBDAlphaScreen::Playing || Width<=0.f || Height<=0.f) return 1.f;
     const float Scale=FMath::Min(Width/1440.f,Height/900.f);
     return FMath::Clamp(1.f-350.f*Scale/Width,.5f,1.f);
@@ -51,7 +51,7 @@ void UBDAlphaViewportClient::LostFocus(FViewport* InViewport)
         const bool OutsideGame = !App.IsActive() || (ActiveWindow.IsValid() && ActiveWindow != GetWindow());
         if (OutsideGame)
             if (auto* Session = GetWorld() ? GetWorld()->GetGameInstance<UBDAlphaSession>() : nullptr)
-                if (Session->GetScreen() == EBDAlphaScreen::Playing) Session->TogglePause();
+                if (Session->GetScreen() == EBDAlphaScreen::Playing) { Session->bTuningVisible=false; Session->SetScreen(EBDAlphaScreen::Pause); }
     }
     Super::LostFocus(InViewport);
 }

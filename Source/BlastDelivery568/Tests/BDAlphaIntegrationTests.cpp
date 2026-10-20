@@ -231,7 +231,7 @@ bool FBDAlphaPlaygroundTest::RunTest(const FString& Parameters)
         return true;
     });
 
-    Step(TEXT("Playground reserves real camera space for the tuning sidebar"),{},[](FFixture& X)
+    Step(TEXT("Playground reserves real camera space for the tuning sidebar"),[](FFixture& X) { X.Session->ToggleTuning(); },[](FFixture& X)
     {
         if (!X.After(.2)) return false;
         int32 W,H; X.PC->GetViewportSize(W,H);
@@ -242,6 +242,8 @@ bool FBDAlphaPlaygroundTest::RunTest(const FString& Parameters)
         X.PC->ProjectWorldLocationToScreen(FVector(0,-20,0),Center);
         X.Test->TestTrue(TEXT("Room center projects into the center of the usable playfield"),FMath::Abs(Center.X-W*Fraction*.5f)<3.f && FMath::Abs(Center.Y-H*.5f)<3.f);
         X.Session->ToggleHUD();
+        X.Test->TestTrue(TEXT("H does not close the live console"),X.Session->IsTuningVisible());
+        X.Session->ToggleTuning();
         return true;
     });
     Step(TEXT("Clean view restores the full camera viewport"),{},[](FFixture& X)
@@ -1042,6 +1044,14 @@ bool FBDAlphaLocalMultiplayerTest::RunTest(const FString& Parameters)
         Send(X,EKeys::Gamepad_LeftX,0.f); Send(X,EKeys::Gamepad_RightY,0.f);
         return true;
     });
+    Step(TEXT("Joined gamepad Back closes the live tuning console"),[Pad1](FFixture& X)
+    {
+        X.Session->ToggleTuning();
+        X.World->GetGameViewport()->InputKey(FInputKeyEventArgs::CreateSimulated(EKeys::Gamepad_FaceButton_Right,IE_Pressed,1.f,1,Pad1));
+        X.World->GetGameViewport()->InputKey(FInputKeyEventArgs::CreateSimulated(EKeys::Gamepad_FaceButton_Right,IE_Released,0.f,1,Pad1));
+        X.Test->TestFalse(TEXT("Multiplayer router closes the console"),X.Session->IsTuningVisible());
+        X.Test->TestEqual(TEXT("Back does not pause or leave the current level"),X.Session->GetScreen(),EBDAlphaScreen::Playing);
+    },[](FFixture&) { return true; });
     Step(TEXT("Each courier can hold its own live bomb; RT release throws only its owner"),[Pad,Send](FFixture& X)
     {
         X.Session->SetParameter(TEXT("FuseSeconds"),8.f);

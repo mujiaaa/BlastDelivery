@@ -2,6 +2,11 @@
 #include "BDCharacter.h"
 #include "BDBomb.h"
 #include "BDGameMode.h"
+#include "BDAirport.h"
+#include "BDMirrorLab.h"
+#include "BDCrate.h"
+#include "BDPuzzleActors.h"
+#include "Components/StaticMeshComponent.h"
 #include "BDAlphaSession.h"
 #include "BDAlphaUI.h"
 #include "BDAlphaViewportClient.h"
@@ -13,6 +18,7 @@
 #include "EngineUtils.h"
 #include "Engine/GameViewportClient.h"
 #include "Kismet/GameplayStatics.h"
+#include "InputKeyEventArgs.h"
 
 ABDPlayerController::ABDPlayerController()
 {
@@ -80,7 +86,7 @@ void ABDPlayerController::RefreshAlphaInput()
     Mode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
     SetInputMode(Mode);
     if (auto* Session=GetGameInstance<UBDAlphaSession>())
-        if (Session->GetScreen()==EBDAlphaScreen::Playing && FSlateApplication::IsInitialized())
+        if ((Session->GetScreen()==EBDAlphaScreen::Playing || Session->GetScreen()==EBDAlphaScreen::MainMenu) && FSlateApplication::IsInitialized())
             FSlateApplication::Get().SetAllUserFocusToGameViewport();
 }
 void ABDPlayerController::SetupInputComponent()
@@ -92,10 +98,25 @@ void ABDPlayerController::SetupInputComponent()
     InputComponent->BindKey(EKeys::LeftMouseButton, IE_Released, this, &ABDPlayerController::LeftReleased).bExecuteWhenPaused = true;
     InputComponent->BindKey(EKeys::Escape, IE_Pressed, this, &ABDPlayerController::TogglePause).bExecuteWhenPaused = true;
     InputComponent->BindKey(EKeys::R, IE_Pressed, this, &ABDPlayerController::Restart).bExecuteWhenPaused = true;
+    InputComponent->BindKey(EKeys::Backslash,IE_Pressed,this,&ABDPlayerController::DebugComplete);
+    InputComponent->BindKey(EKeys::Q,IE_Pressed,this,&ABDPlayerController::AirportSmoke);
+    InputComponent->BindKey(EKeys::E,IE_Pressed,this,&ABDPlayerController::AirportEngine);
     InputComponent->BindKey(EKeys::H, IE_Pressed, this, &ABDPlayerController::ToggleHUD);
     InputComponent->BindKey(EKeys::Gamepad_Special_Right,IE_Pressed,this,&ABDPlayerController::TogglePause).bExecuteWhenPaused=true;
     InputComponent->BindKey(EKeys::Gamepad_FaceButton_Right,IE_Pressed,this,&ABDPlayerController::GamepadBack).bExecuteWhenPaused=true;
 }
+bool ABDPlayerController::InputKey(const FInputKeyEventArgs& Params)
+{
+    if (Params.Key==EKeys::G)
+    {
+        // UI focus/input-mode changes can make PlayerInput synthesize a new
+        // press from a repeat. Handle this shortcut before that buffered path.
+        if (Params.Event==IE_Pressed) ToggleTuning();
+        return true;
+    }
+    return Super::InputKey(Params);
+}
+
 void ABDPlayerController::PlayerTick(float DeltaSeconds)
 {
     Super::PlayerTick(DeltaSeconds);
@@ -104,7 +125,7 @@ void ABDPlayerController::PlayerTick(float DeltaSeconds)
     {
         const auto* Game=GetWorld()->GetAuthGameMode<ABDGameMode>();
         if (Game && Game->bCompleted) Session->ShowResults();
-        if (Session->GetScreen()!=EBDAlphaScreen::Playing) return;
+        if (Session->GetScreen()!=EBDAlphaScreen::Playing && Session->GetScreen()!=EBDAlphaScreen::MainMenu) return;
     }
     if (IsPaused()) return;
     auto* Mode = GetWorld()->GetAuthGameMode<ABDGameMode>();
@@ -117,6 +138,7 @@ void ABDPlayerController::PlayerTick(float DeltaSeconds)
     // Reconcile a release during pause or a focus change without advancing the fuse.
     if (bBombButtonDown && !IsInputKeyDown(EKeys::RightMouseButton)) ReleaseBomb();
     if (bLeftBombButtonDown && !IsInputKeyDown(EKeys::LeftMouseButton)) LeftReleased();
+    if (bMirrorBaseClickDown && !IsInputKeyDown(EKeys::LeftMouseButton)) bMirrorBaseClickDown=false;
 }
 void ABDPlayerController::UpdateCameraFraming()
 {
@@ -158,13 +180,27 @@ void ABDPlayerController::ReleaseBomb()
 }
 void ABDPlayerController::LeftPressed()
 {
-    if (!CanUseGameplayInput()) return;
+    if (!CanUseGameplayInput() || bMirrorBaseClickDown) return;
     auto* Courier=Cast<ABDCharacter>(GetPawn());
     auto* Game=GetWorld()->GetAuthGameMode<ABDGameMode>();
     if (!Courier || !Game) return;
+    // Temporary Mirror Lab playtest interactions. Consume both edges of the
+    // click so moving an edge emitter or rotating a base never uses a bomb.
+    if (!bLeftBombButtonDown) if (auto* Mirror=Cast<ABDAlphaMirrorGameMode>(Game))
+    {
+        FVector RayStart,RayDirection;
+        if (DeprojectMousePositionToWorld(RayStart,RayDirection)
+            && (Mirror->TrySwapEdgeEmitterAtRay(RayStart,RayDirection)
+                || Mirror->TryRotateBaseAtRay(RayStart,RayDirection)))
+        {
+            bMirrorBaseClickDown=true;
+            if (auto* Session=GetGameInstance<UBDAlphaSession>()) Session->MarkPractice();
+            return;
+        }
+    }
     UpdateMouseAim(Courier);
     const auto* Session=GetGameInstance<UBDAlphaSession>();
-    const bool bSimple=!Session || Session->IsSimpleControls();
+    const bool bSimple=!Session || Session->IsSimpleControls() || Session->GetScreen()==EBDAlphaScreen::MainMenu;
     if (bSimple)
     {
         if (bBombButtonDown || bLeftBombButtonDown) return;
@@ -178,6 +214,7 @@ void ABDPlayerController::LeftPressed()
 }
 void ABDPlayerController::LeftReleased()
 {
+    if (bMirrorBaseClickDown) { bMirrorBaseClickDown=false; return; }
     if (IsPaused()) return;
     const bool bOwned=bLeftBombButtonDown;
     bLeftBombButtonDown=false;
@@ -216,12 +253,13 @@ void ABDPlayerController::Restart()
 bool ABDPlayerController::CanUseGameplayInput() const
 {
     if (const auto* Session=GetGameInstance<UBDAlphaSession>())
-        if (Session->GetScreen()!=EBDAlphaScreen::Playing) return false;
+        if (Session->GetScreen()!=EBDAlphaScreen::Playing && Session->GetScreen()!=EBDAlphaScreen::MainMenu) return false;
     const auto* Mode = GetWorld()->GetAuthGameMode<ABDGameMode>();
     return !IsPaused() && Mode && Mode->IsGameplayInputAllowed();
 }
 void ABDPlayerController::ResetBombInput()
 {
+    bMirrorBaseClickDown = false;
     bBombButtonDown = false;
     bLeftBombButtonDown = false;
     FlushPressedKeys();
@@ -233,7 +271,7 @@ void ABDPlayerController::ToggleHUD()
 void ABDPlayerController::GamepadBack()
 {
     if (auto* Session=GetGameInstance<UBDAlphaSession>())
-        if (Session->GetScreen()!=EBDAlphaScreen::Playing) Session->Back();
+        if (Session->GetScreen()!=EBDAlphaScreen::Playing || Session->IsTuningVisible()) Session->Back();
 }
 void ABDPlayerController::SetPlaygroundView(const FVector& Center, float Width, float Height)
 {
@@ -267,4 +305,28 @@ void ABDPlayerController::SetTutorialView(const FVector& Center)
 float ABDPlayerController::GetViewWidth() const
 {
     return RoomCamera ? RoomCamera->GetCameraComponent()->OrthoWidth : 3000.f;
+}
+
+void ABDPlayerController::ToggleTuning() { if (auto* S=GetGameInstance<UBDAlphaSession>()) S->ToggleTuning(); }
+void ABDPlayerController::DebugComplete()
+{
+    auto* S=GetGameInstance<UBDAlphaSession>();
+    auto* G=GetWorld()->GetAuthGameMode<ABDGameMode>();
+    if (!S || !G || S->IsTutorial() || S->GetScreen()!=EBDAlphaScreen::Playing || G->bCompleted) return;
+    S->MarkPractice();
+    if (auto* Airport=Cast<ABDAlphaAirportGameMode>(G)) { Airport->DebugCompleteDelivery(); return; }
+    if (!G->Crate || !G->Goal || G->Crate->IsRecovering()) return;
+    G->Crate->Mesh->SetSimulatePhysics(true);
+    G->Crate->Mesh->SetPhysicsLinearVelocity(FVector::ZeroVector);
+    G->Crate->Mesh->SetPhysicsAngularVelocityInRadians(FVector::ZeroVector);
+    const float Half=G->Crate->Mesh->Bounds.BoxExtent.Z;
+    G->Crate->SetActorLocationAndRotation(G->Goal->GetActorLocation()+FVector(0,0,Half+3),FRotator::ZeroRotator,false,nullptr,ETeleportType::TeleportPhysics);
+}
+void ABDPlayerController::AirportSmoke()
+{
+    if (CanUseGameplayInput()) if (auto* G=GetWorld()->GetAuthGameMode<ABDAlphaAirportGameMode>()) G->DeploySmokeTowardAim();
+}
+void ABDPlayerController::AirportEngine()
+{
+    if (CanUseGameplayInput()) if (auto* G=GetWorld()->GetAuthGameMode<ABDAlphaAirportGameMode>()) G->PressEngineControl();
 }

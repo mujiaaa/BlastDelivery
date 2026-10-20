@@ -144,7 +144,7 @@ void ABDGoal::Tick(float DeltaSeconds)
 {
     Super::Tick(DeltaSeconds);
     const auto* Mode=GetWorld()->GetAuthGameMode<ABDGameMode>();
-    if (!Mode || !Mode->IsPlayground() || Mode->bCompleted || !Mode->GetPhysicsSettings().bGoalAssist) return;
+    if (!Mode || !Mode->SupportsGoalAssist() || Mode->bCompleted || !Mode->GetPhysicsSettings().bGoalAssist) return;
     const FBox Area=Region->Bounds.GetBox();
     for (TActorIterator<ABDCrate> It(GetWorld()); It; ++It)
     {

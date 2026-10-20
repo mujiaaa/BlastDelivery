@@ -17,6 +17,7 @@ public:
     ABDPlayerController();
     virtual void BeginPlay() override;
     virtual void SetupInputComponent() override;
+    virtual bool InputKey(const FInputKeyEventArgs& Params) override;
     virtual void PlayerTick(float DeltaSeconds) override;
     virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
     void TogglePause();
@@ -44,10 +45,15 @@ private:
     UPROPERTY() TObjectPtr<UBDLocalMultiplayer> LocalMultiplayer;
     bool bBombButtonDown = false;
     bool bLeftBombButtonDown = false;
+    bool bMirrorBaseClickDown = false;
     void LeftPressed();
     void LeftReleased();
     void ToggleHUD();
     void GamepadBack();
+    void ToggleTuning();
+    void DebugComplete();
+    void AirportSmoke();
+    void AirportEngine();
     TSharedPtr<SWidget> AlphaWidget;
     TSharedPtr<SWidget> ViewportWidget;
 };

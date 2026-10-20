@@ -1,5 +1,7 @@
 #include "BDAlphaSession.h"
 #include "BDGameMode.h"
+#include "BDAlphaMenu.h"
+#include "TimerManager.h"
 #include "BDPlayerController.h"
 #include "Kismet/GameplayStatics.h"
 #include "Kismet/KismetSystemLibrary.h"
@@ -12,6 +14,10 @@
 namespace
 {
 constexpr const TCHAR* AlphaPreferences = TEXT("BlastDelivery.AlphaPreferences");
+constexpr float TimeTargets[] = {120.f,180.f,240.f,420.f,420.f};
+constexpr int32 BombTargets[] = {8,12,20,24,24};
+static_assert(UE_ARRAY_COUNT(TimeTargets)==UBDAlphaSession::LevelCount);
+static_assert(UE_ARRAY_COUNT(BombTargets)==UBDAlphaSession::LevelCount);
 bool UseSavedControlPreference()
 {
     return !GIsAutomationTesting && !FParse::Param(FCommandLine::Get(), TEXT("BDAlphaAutomation"));
@@ -22,6 +28,7 @@ void UBDAlphaSession::Init()
 {
     Super::Init();
     PlaygroundSettings = FBDPhysicsSettings();
+    MirrorSizes = FVector(1.5);
     if (GConfig && UseSavedControlPreference())
         GConfig->GetBool(AlphaPreferences, TEXT("SimpleControls"), bSimpleControls, GGameUserSettingsIni);
     if (FParse::Param(FCommandLine::Get(),TEXT("BDAlphaAutomation"))) Screen=EBDAlphaScreen::Playing;
@@ -56,17 +63,42 @@ const TArray<FBDTuningParameter>& UBDAlphaSession::Parameters()
     };
     return Values;
 }
+bool UBDAlphaSession::UsesMirrorSizes() const
+{
+    // The last selected level must not change the main-menu room or its settings.
+    const EBDAlphaScreen Context = Screen == EBDAlphaScreen::Settings ? ReturnScreen : Screen;
+    return CurrentLevelIndex == 2 && (Context == EBDAlphaScreen::Playing
+        || Context == EBDAlphaScreen::Pause || Context == EBDAlphaScreen::Results);
+}
+FBDPhysicsSettings UBDAlphaSession::GetPlaygroundSettings() const
+{
+    FBDPhysicsSettings Settings = PlaygroundSettings;
+    if (UsesMirrorSizes())
+    {
+        Settings.PlayerSize = MirrorSizes.X;
+        Settings.BombSize = MirrorSizes.Y;
+        Settings.CrateSize = MirrorSizes.Z;
+    }
+    return Settings;
+}
+FBDPhysicsSettings UBDAlphaSession::GetAuthoredSettings() const
+{
+    FBDPhysicsSettings Defaults;
+    if (UsesMirrorSizes()) Defaults.PlayerSize = Defaults.BombSize = Defaults.CrateSize = 1.5f;
+    return Defaults;
+}
 float UBDAlphaSession::GetParameter(FName Id) const
 {
-    for (const auto& P : Parameters()) if (P.Id == Id) return PlaygroundSettings.*(P.Field);
+    const FBDPhysicsSettings Settings = GetPlaygroundSettings();
+    for (const auto& P : Parameters()) if (P.Id == Id) return Settings.*(P.Field);
     return 0.f;
 }
 void UBDAlphaSession::SetParameter(FName Id, float Value)
 {
-    if (!bPlayground || !FMath::IsFinite(Value)) return;
+    if (!FMath::IsFinite(Value)) return;
     for (const auto& P : Parameters()) if (P.Id == Id)
     {
-        FBDPhysicsSettings Candidate = PlaygroundSettings;
+        FBDPhysicsSettings Candidate = GetPlaygroundSettings();
         Candidate.*(P.Field) = FMath::Clamp(Value,P.Min,P.Max);
         auto* Mode = GetWorld() ? GetWorld()->GetAuthGameMode<ABDGameMode>() : nullptr;
         if (Mode && !Mode->ApplyPhysicsSettings(Candidate))
@@ -74,7 +106,13 @@ void UBDAlphaSession::SetParameter(FName Id, float Value)
             TuningNotice = TEXT("Move into an open area to grow.");
             return;
         }
-        PlaygroundSettings = Candidate;
+        bPracticeRun = true;
+        // Commit only the edited field so a shared mass/fuse edit cannot copy
+        // Mirror's sizes into the other levels' settings.
+        if (UsesMirrorSizes() && P.Field == &FBDPhysicsSettings::PlayerSize) MirrorSizes.X = Candidate.PlayerSize;
+        else if (UsesMirrorSizes() && P.Field == &FBDPhysicsSettings::BombSize) MirrorSizes.Y = Candidate.BombSize;
+        else if (UsesMirrorSizes() && P.Field == &FBDPhysicsSettings::CrateSize) MirrorSizes.Z = Candidate.CrateSize;
+        else PlaygroundSettings.*(P.Field) = Candidate.*(P.Field);
         TuningNotice.Reset();
         return;
     }
@@ -89,46 +127,78 @@ bool UBDAlphaSession::GetFeature(FName Id) const
 void UBDAlphaSession::SetFeature(FName Id, bool Value)
 {
     if (Id == TEXT("tutorialAssist")) { bTutorialAssist = Value; return; }
-    if (!bPlayground) return;
+    bPracticeRun = true;
     if (Id == TEXT("fastFuse")) PlaygroundSettings.bFastCollisionFuse = Value;
     else if (Id == TEXT("goalAssist")) PlaygroundSettings.bGoalAssist = Value;
-    if (auto* Mode = GetWorld()->GetAuthGameMode<ABDGameMode>()) Mode->ApplyPhysicsSettings(PlaygroundSettings);
+    if (auto* Mode = GetWorld()->GetAuthGameMode<ABDGameMode>()) Mode->ApplyPhysicsSettings(GetPlaygroundSettings());
 }
 void UBDAlphaSession::ResetTuning()
 {
-    if (!bPlayground) return;
-    const FBDPhysicsSettings Defaults;
+    bPracticeRun = true;
+    const FBDPhysicsSettings Defaults = GetAuthoredSettings();
     if (auto* Mode = GetWorld()->GetAuthGameMode<ABDGameMode>())
         if (!Mode->ApplyPhysicsSettings(Defaults)) { TuningNotice=TEXT("Move into an open area to restore sizes."); return; }
-    PlaygroundSettings = Defaults;
+    PlaygroundSettings = FBDPhysicsSettings();
+    if (UsesMirrorSizes()) MirrorSizes = FVector(1.5);
     TuningNotice.Reset();
 }
 void UBDAlphaSession::SetScreen(EBDAlphaScreen Value)
 {
     Screen = Value;
-    if (GetWorld()) UGameplayStatics::SetGamePaused(this,Value != EBDAlphaScreen::Playing);
+    if (GetWorld()) UGameplayStatics::SetGamePaused(this,Value != EBDAlphaScreen::Playing && Value != EBDAlphaScreen::MainMenu);
     if (auto* PC = Cast<ABDPlayerController>(UGameplayStatics::GetPlayerController(this,0)))
         PC->RefreshAlphaInput();
 }
-void UBDAlphaSession::ShowMainMenu() { bShowHelp=false; SetScreen(EBDAlphaScreen::MainMenu); }
-void UBDAlphaSession::ShowLevelSelect() { bShowHelp=false; SetScreen(EBDAlphaScreen::LevelSelect); }
-void UBDAlphaSession::StartTutorial()
+FString UBDAlphaSession::LevelTitle(int32 Index)
 {
-    bPlayground=false; bSimpleControls=true; bShowHelp=false; bShowHUD=true; bLoadingLevel=true;
-    SetScreen(EBDAlphaScreen::Playing);
-    UGameplayStatics::OpenLevel(this,TEXT("/Game/Maps/FiveSceneTutorial"));
+    static const TCHAR* Titles[] = {TEXT("Tutorial"),TEXT("Playground"),TEXT("Mirror Lab"),TEXT("Airport"),TEXT("Jungle")};
+    return Index >= 0 && Index < LevelCount ? Titles[Index] : TEXT("");
 }
-void UBDAlphaSession::StartPlayground()
+bool UBDAlphaSession::IsTuningVisible() const
 {
-    bPlayground=true; bShowHelp=false; bShowHUD=true; bLoadingLevel=true;
-    SetScreen(EBDAlphaScreen::Playing);
-    UGameplayStatics::OpenLevel(this,TEXT("/Game/Maps/Tutorial"),true,TEXT("game=/Script/BlastDelivery568.BDAlphaPlaygroundGameMode"));
+    return bTuningVisible && (Screen==EBDAlphaScreen::Playing || Screen==EBDAlphaScreen::Settings || Screen==EBDAlphaScreen::Pause);
 }
-void UBDAlphaSession::Replay() { if (bPlayground) StartPlayground(); else StartTutorial(); }
-void UBDAlphaSession::NextLevel() { if (!bPlayground) StartPlayground(); else ShowLevelSelect(); }
+void UBDAlphaSession::ToggleTuning()
+{
+    if (Screen!=EBDAlphaScreen::Playing && Screen!=EBDAlphaScreen::Settings && Screen!=EBDAlphaScreen::Pause) return;
+    bTuningVisible=!bTuningVisible;
+    if (auto* PC=Cast<ABDPlayerController>(UGameplayStatics::GetPlayerController(this,0))) PC->RefreshAlphaInput();
+}
+void UBDAlphaSession::ShowMainMenu()
+{
+    bShowHelp=false; bTuningVisible=false;
+    SetScreen(EBDAlphaScreen::MainMenu);
+    if (!GetWorld()->GetAuthGameMode<ABDAlphaMenuGameMode>() && !bLoadingLevel)
+    {
+        bLoadingLevel=true;
+        UGameplayStatics::OpenLevel(this,TEXT("/Game/Maps/Tutorial"),true,TEXT("game=/Script/BlastDelivery568.BDAlphaMenuGameMode"));
+    }
+}
+void UBDAlphaSession::ShowLevelSelect() { bShowHelp=false; bTuningVisible=false; SetScreen(EBDAlphaScreen::LevelSelect); }
+void UBDAlphaSession::StartTutorial() { StartLevel(0); }
+void UBDAlphaSession::StartPlayground() { StartLevel(1); }
+void UBDAlphaSession::StartLevel(int32 Index)
+{
+    if (Index<0 || Index>=LevelCount) return;
+    CurrentLevelIndex=Index; bPlayground=Index==1;
+    if (Index==0) bSimpleControls=true;
+    bShowHelp=false; bShowHUD=true; bTuningVisible=false; bLoadingLevel=true;
+    bPracticeRun=false;
+    SetScreen(EBDAlphaScreen::Playing);
+    const FBDPhysicsSettings Settings = GetPlaygroundSettings();
+    const FBDPhysicsSettings Defaults = GetAuthoredSettings();
+    for (const auto& P : Parameters()) if (!FMath::IsNearlyEqual(Settings.*P.Field,Defaults.*P.Field)) bPracticeRun=true;
+    bPracticeRun |= Settings.bFastCollisionFuse || Settings.bGoalAssist;
+    const TCHAR* Maps[] = {TEXT("/Game/Maps/FiveSceneTutorial"),TEXT("/Game/Maps/Tutorial"),TEXT("/Game/Maps/Tutorial"),TEXT("/Game/Maps/Tutorial"),TEXT("/Game/Maps/JungleBananaTrap")};
+    const TCHAR* Modes[] = {TEXT(""),TEXT("game=/Script/BlastDelivery568.BDAlphaPlaygroundGameMode"),TEXT("game=/Script/BlastDelivery568.BDAlphaMirrorGameMode"),TEXT("game=/Script/BlastDelivery568.BDAlphaAirportGameMode"),TEXT("game=/Script/BlastDelivery568.BDJungleGameMode")};
+    UGameplayStatics::OpenLevel(this,FName(Maps[Index]),true,Modes[Index]);
+}
+void UBDAlphaSession::Replay() { StartLevel(CurrentLevelIndex); }
+void UBDAlphaSession::NextLevel() { if (HasNextLevel()) StartLevel(CurrentLevelIndex+1); else ShowLevelSelect(); }
 void UBDAlphaSession::OpenSettings() { ReturnScreen=Screen; SetScreen(EBDAlphaScreen::Settings); }
 void UBDAlphaSession::Back()
 {
+    if (bTuningVisible) { ToggleTuning(); return; }
     if (Screen == EBDAlphaScreen::Settings) SetScreen(ReturnScreen);
     else if (Screen == EBDAlphaScreen::Pause) Resume();
     else if (Screen == EBDAlphaScreen::LevelSelect) ShowMainMenu();
@@ -136,12 +206,45 @@ void UBDAlphaSession::Back()
 }
 void UBDAlphaSession::TogglePause()
 {
+    if (bTuningVisible) { ToggleTuning(); return; }
     if (Screen == EBDAlphaScreen::Playing) SetScreen(EBDAlphaScreen::Pause);
     else if (Screen == EBDAlphaScreen::Pause) Resume();
     else Back();
 }
 void UBDAlphaSession::Resume() { SetScreen(EBDAlphaScreen::Playing); }
-void UBDAlphaSession::ShowResults() { if (Screen==EBDAlphaScreen::Playing) SetScreen(EBDAlphaScreen::Results); }
+int32 UBDAlphaSession::GetSavedStarMask(int32 Level) const
+{
+    if (Level<0 || Level>=LevelCount || !GConfig || !UseSavedControlPreference()) return 0;
+    int32 Saved=0;
+    GConfig->GetInt(AlphaPreferences,*FString::Printf(TEXT("Level%dStars"),Level),Saved,GGameUserSettingsIni);
+    return Saved & 7;
+}
+float UBDAlphaSession::GetResultTimeTarget() const
+{
+    return TimeTargets[FMath::Clamp(CurrentLevelIndex,0,LevelCount-1)];
+}
+int32 UBDAlphaSession::GetResultBombTarget() const
+{
+    return BombTargets[FMath::Clamp(CurrentLevelIndex,0,LevelCount-1)];
+}
+void UBDAlphaSession::ShowResults()
+{
+    if (Screen!=EBDAlphaScreen::Playing) return;
+    const auto* Mode=GetWorld()->GetAuthGameMode<ABDGameMode>();
+    if (!Mode || !Mode->bCompleted) return;
+    ResultBombs=Mode->BombsUsed; ResultTime=Mode->ElapsedSeconds;
+    // Provisional playtest targets; always award the delivery star.
+    ResultStars=1 | (ResultTime<=GetResultTimeTarget()?2:0) | (ResultBombs<=GetResultBombTarget()?4:0);
+    bResultPractice=bPracticeRun; ++ResultsRevision; bTuningVisible=false;
+    if (!bResultPractice && GConfig && UseSavedControlPreference())
+    {
+        const FString Key=FString::Printf(TEXT("Level%dStars"),CurrentLevelIndex);
+        int32 Best=0; GConfig->GetInt(AlphaPreferences,*Key,Best,GGameUserSettingsIni);
+        GConfig->SetInt(AlphaPreferences,*Key,Best|ResultStars,GGameUserSettingsIni);
+        GConfig->Flush(false,GGameUserSettingsIni);
+    }
+    SetScreen(EBDAlphaScreen::Results);
+}
 void UBDAlphaSession::Quit()
 {
     UKismetSystemLibrary::QuitGame(this,UGameplayStatics::GetPlayerController(this,0),EQuitPreference::Quit,false);
@@ -164,7 +267,7 @@ void UBDAlphaSession::SetSimpleControls(bool Value)
 }
 bool UBDAlphaSession::IsTutorialControlsLocked() const
 {
-    return !bPlayground && (Screen==EBDAlphaScreen::Playing || Screen==EBDAlphaScreen::Pause
+    return IsTutorial() && (Screen==EBDAlphaScreen::Playing || Screen==EBDAlphaScreen::Pause
         || (Screen==EBDAlphaScreen::Settings && (ReturnScreen==EBDAlphaScreen::Playing || ReturnScreen==EBDAlphaScreen::Pause)));
 }
 void UBDAlphaSession::SetVolume(float Value)
@@ -175,7 +278,8 @@ void UBDAlphaSession::SetVolume(float Value)
 void UBDAlphaSession::OnLevelReady()
 {
     bLoadingLevel=false;
-    if (const auto* Mode=GetWorld()->GetAuthGameMode<ABDGameMode>()) bPlayground=Mode->IsPlayground();
+    if (Screen==EBDAlphaScreen::MainMenu && !GetWorld()->GetAuthGameMode<ABDAlphaMenuGameMode>())
+        GetWorld()->GetTimerManager().SetTimerForNextTick(this,&UBDAlphaSession::ShowMainMenu);
     SetVolume(Volume);
     SetScreen(Screen);
 }

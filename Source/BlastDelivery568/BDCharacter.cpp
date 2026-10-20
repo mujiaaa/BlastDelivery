@@ -2,6 +2,7 @@
 #include "BDBomb.h"
 #include "BDCharacterMovement.h"
 #include "BDAlphaLook.h"
+#include "BDAlphaSession.h"
 #include "BDGameMode.h"
 #include "BDVisuals.h"
 #include "Components/CapsuleComponent.h"
@@ -87,12 +88,24 @@ void ABDCharacter::BeginPlay()
     SpawnTransform = GetActorTransform();
     SpawnFloorZ = GetActorLocation().Z - GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
     const auto* Mode=GetWorld()->GetAuthGameMode<ABDGameMode>();
-    const bool bAlphaPalette=Mode && Mode->IsPlayground();
+    const auto* Session=GetGameInstance<UBDAlphaSession>();
+    const bool bAlphaPalette=Session ? (!Session->IsTutorial() || Session->GetScreen()==EBDAlphaScreen::MainMenu) : Mode && Mode->IsPlayground();
     auto ApplyMaterial=[bAlphaPalette](UStaticMeshComponent* Part,const TCHAR* Name)
     {
         if (bAlphaPalette) BDAlphaLook::Material(Part,Name);
         else BDVisuals::Material(Part,Name);
     };
+    // Donor maps saved an older procedural mesh list. Rebuild runtime references
+    // from the current native hierarchy rather than trust serialized old pointers.
+    BodyParts.Reset(); Eyes.Reset(); LightParts.Reset();
+    TArray<UStaticMeshComponent*> VisualMeshes; GetComponents(VisualMeshes);
+    for (UStaticMeshComponent* Part:VisualMeshes)
+    {
+        if (!IsValid(Part) || !VisualRoot || !Part->IsAttachedTo(VisualRoot)) continue;
+        if (Part->GetFName()==TEXT("LeftEye") || Part->GetFName()==TEXT("RightEye")) Eyes.Add(Part);
+        else if (Part->GetFName()==TEXT("SoftFace")) LightParts.Add(Part);
+        else BodyParts.Add(Part);
+    }
     for (auto& Part : BodyParts) ApplyMaterial(Part,TEXT("Player"));
     for (auto& Eye : Eyes) ApplyMaterial(Eye,TEXT("Ink"));
     // The old tutorial palette has no Light asset; the new face uses its own
@@ -297,4 +310,10 @@ void ABDCharacter::SetLocalPlayerConnected(bool bConnected,const FVector& SpawnP
     SpawnFloorZ=SpawnPosition.Z-GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
     Move->SetMovementMode(MOVE_Falling);
     ResetPresentation();
+}
+
+void ABDCharacter::SetRespawnCheckpoint(FVector WorldPosition)
+{
+    SpawnTransform.SetLocation(WorldPosition);
+    SpawnFloorZ=WorldPosition.Z-(GetCapsuleComponent()->GetScaledCapsuleHalfHeight());
 }

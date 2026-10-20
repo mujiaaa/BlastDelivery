@@ -56,7 +56,7 @@ void ConfigurePlaygroundLighting(UWorld* World)
 
     ADirectionalLight* Sun=World->SpawnActor<ADirectionalLight>(FVector(0,0,1600),FRotator(-55,-118,0));
     Sun->Tags.Add(TEXT("AlphaPlaygroundLight"));
-    UDirectionalLightComponent* Key=Sun->GetComponent();
+    UDirectionalLightComponent* Key=CastChecked<UDirectionalLightComponent>(Sun->GetLightComponent());
     Key->SetMobility(EComponentMobility::Movable);
     // ADirectionalLight's root defaults to -46 degrees. Spawn transforms compose
     // with that template rotation, so explicitly set the final world rotation.
