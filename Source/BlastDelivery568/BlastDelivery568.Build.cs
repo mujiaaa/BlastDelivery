@@ -7,7 +7,7 @@ public class BlastDelivery568 : ModuleRules
 	public BlastDelivery568(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
-	
+		bUseUnity = false;
 		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput", "PhysicsCore", "AIModule", "NavigationSystem" });
 		if (Target.bBuildEditor)
 		{

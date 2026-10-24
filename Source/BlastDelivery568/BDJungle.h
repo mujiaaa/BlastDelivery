@@ -9,6 +9,7 @@
 class UBoxComponent;
 class ABDGate;
 class ABDWildMan;
+class AAIController;
 
 // The map owns its tuning; tutorial defaults are never modified.
 UCLASS()
@@ -23,11 +24,11 @@ public:
     UPROPERTY(EditAnywhere, Category="Jungle|Slide") float SlideSpeed = 850.f;
     UPROPERTY(EditAnywhere, Category="Jungle|Wild men") float DetectionRange = 440.f;
     UPROPERTY(EditAnywhere, Category="Jungle|Wild men") float DistractionSeconds = 20.f;
-    UPROPERTY(EditAnywhere, Category="Jungle|Wild men", meta=(ClampMin="1.0")) float EatingSeconds = 25.f;
+    UPROPERTY(EditAnywhere, Category="Jungle|Wild men", meta=(ClampMin="1.0")) float EatingSeconds = 12.f;
     UPROPERTY(EditAnywhere, Category="Jungle|Wild men") float BananaAttractionRange = 2400.f;
     UPROPERTY(EditAnywhere, Category="Jungle|Wild men") float SpawnIntervalMin = 32.f;
     UPROPERTY(EditAnywhere, Category="Jungle|Wild men") float SpawnIntervalMax = 48.f;
-    UPROPERTY(EditAnywhere, Category="Jungle|Wild men") int32 MaxWildMen = 3;
+    UPROPERTY(EditAnywhere, Category="Jungle|Wild men") int32 MaxWildMen = 1;
     UPROPERTY(EditAnywhere, Category="Jungle|Wild men") TArray<FVector> SpawnPoints;
     UPROPERTY(EditAnywhere, Category="Jungle|Puzzle") FVector ClearingCenter = FVector(-400,-760,0);
     UPROPERTY(EditAnywhere, Category="Jungle|Puzzle") float GateLureRange = 400.f;
@@ -43,13 +44,14 @@ public:
     virtual void FacePoint(const FVector& Point) override;
     virtual void Respawn() override;
     bool StartSlide(float Distance, float Speed);
-    bool IsSliding() const { return SlideRemaining > 0.f; }
+    bool IsSliding() const { return SlipTime > 0.f; }
     void EndSlide();
     float GetSlideRemaining() const { return SlideRemaining; }
 private:
     FVector SlideDirection = FVector::ZeroVector;
     float SlideRemaining = 0.f;
     float SlideSpeed = 850.f;
+    float SlipTime = 0.f;
 };
 
 UCLASS()
@@ -62,9 +64,12 @@ public:
     virtual void Tick(float DeltaSeconds) override;
     UPROPERTY(EditAnywhere, Category="Peel") bool bHelpful = true;
     UPROPERTY(EditAnywhere, Category="Peel") FVector2D TriggerExtent = FVector2D(80,32);
+    bool IsConsumed() const { return bConsumed; }
+    void ResetPeel();
 private:
     UPROPERTY() TArray<TObjectPtr<UStaticMeshComponent>> Pieces;
     bool bOccupied = false;
+    bool bConsumed = false;
 };
 
 UCLASS()
@@ -98,16 +103,26 @@ public:
     bool IsEating() const;
     float GetEatingRemaining() const;
     bool IsChasing() const { return bChasing; }
+    bool IsSmelling() const { return ScentTime > 0.f; }
+    void ResetPuzzle();
     UPROPERTY(EditAnywhere, Category="Wild man") bool bPassageGuard = false;
     UPROPERTY(EditAnywhere, Category="Wild man") bool bGateOpener = false;
-    UPROPERTY(EditAnywhere, Category="Wild man") float PatrolRadius = 120.f;
+    UPROPERTY(EditAnywhere, Category="Wild man") float PatrolRadius = 320.f;
+    UPROPERTY(EditAnywhere, Category="Wild man") float PatrolSpeed = 145.f;
     UPROPERTY(EditAnywhere, Category="Wild man") float ChaseSpeed = 210.f;
     UPROPERTY(EditAnywhere, Category="Wild man") float LureSpeed = 280.f;
 private:
     UPROPERTY() TArray<TObjectPtr<UStaticMeshComponent>> Hair;
+    UPROPERTY() TArray<TObjectPtr<UStaticMeshComponent>> KeyParts;
+    UPROPERTY() TArray<TObjectPtr<UStaticMeshComponent>> Scent;
+    float ScentTime = 0.f;
     FVector Home, Lure;
     float DistractedUntil = 0.f;
     float NextDecision = 0.f;
+    FVector PatrolTarget = FVector::ZeroVector;
+    bool bHasPatrolTarget = false;
+    float PatrolWaitUntil = 0.f;
+    void Patrol(AAIController* AI, float Now);
     TWeakObjectPtr<ABDBomb> Food;
     float EatingStarted = -1.f;
     float MealLifeSpan = 0.f;

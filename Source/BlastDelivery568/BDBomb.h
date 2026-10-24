@@ -40,6 +40,7 @@ public:
     float GetFuseBurnRate() const { return bCollisionFuseAccelerated ? Profile.CollisionFuseMultiplier : 1.f; }
     void Explode();
     void MakeBanana();
+    void DropAsBananaFood();
     bool IsBanana() const { return bBanana; }
     bool IsBeingEaten() const { return Consumer.IsValid(); }
     ABDCharacter* GetConsumer() const;

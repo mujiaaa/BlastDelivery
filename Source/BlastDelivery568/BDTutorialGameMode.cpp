@@ -20,22 +20,22 @@ ABDTutorialGameMode::ABDTutorialGameMode()
 {
     DefaultPawnClass = nullptr; // Each stage supplies the pawn that actually plays that scene.
     HUDClass = ABDTutorialHUD::StaticClass();
-    SceneOrder = { EBDTutorialScene::Throw, EBDTutorialScene::MoveBox, EBDTutorialScene::PutDown,
-        EBDTutorialScene::CrossGap, EBDTutorialScene::Deliver };
+    SceneOrder = { EBDTutorialScene::ChargeCorridor };
 }
 
 void ABDTutorialGameMode::BeginPlay()
 {
     Super::BeginPlay();
-    if (SceneOrder.IsEmpty())
-        SceneOrder = { EBDTutorialScene::Throw, EBDTutorialScene::MoveBox, EBDTutorialScene::PutDown,
-            EBDTutorialScene::CrossGap, EBDTutorialScene::Deliver };
+    // The shipped flow contains only the corridor, including when an older saved
+    // config still lists the five retained lessons. Their builders, graphics and
+    // transitions remain available for explicit editor fixtures and future reuse.
+    SceneOrder = { EBDTutorialScene::ChargeCorridor };
     // Start on the first tick, after the local controller has initialized its viewport.
 }
 
 EBDTutorialScene ABDTutorialGameMode::GetScene() const
 {
-    return SceneOrder.IsValidIndex(SceneIndex) ? SceneOrder[SceneIndex] : EBDTutorialScene::Throw;
+    return SceneOrder.IsValidIndex(SceneIndex) ? SceneOrder[SceneIndex] : EBDTutorialScene::ChargeCorridor;
 }
 EBDTutorialScene ABDTutorialGameMode::GetNextScene() const
 {
@@ -71,7 +71,40 @@ void ABDTutorialGameMode::BuildStage(FBDTutorialStage& Stage, EBDTutorialScene S
         Stage.Actors.Add(Actor);
         return Actor;
     };
+    const bool bCorridor = Scene == EBDTutorialScene::ChargeCorridor;
     const bool bGap = Scene == EBDTutorialScene::CrossGap || Scene == EBDTutorialScene::Deliver;
+    if (bCorridor)
+    {
+        auto* PC = Cast<ABDPlayerController>(UGameplayStatics::GetPlayerController(this,0));
+        if (PC) PC->SetPlaygroundView(Origin+FVector(0,0,40),1800.f,1100.f);
+        const float Width = PC ? PC->GetViewWidth() : 1956.f;
+        CorridorBoxX = Width*.5f; // The right edge bisects the package on entry.
+        // Two ordinary short-toss blasts can deliver the package into this end zone.
+        CorridorEnd = CorridorBoxX+1500.f;
+        Floor(FVector((CorridorEnd-Width*.46f)*.5f,0,-35),FVector(CorridorEnd+Width*.46f,1000,70));
+        auto Wall = [&](FVector P,FVector Size)
+        {
+            auto* A = GetWorld()->SpawnActor<ABDBarrier>(Origin+P,FRotator::ZeroRotator,Params);
+            A->Configure(Size); Stage.Actors.Add(A);
+        };
+        const float Left = -Width*.46f;
+        Wall(FVector(Left,0,0),FVector(55,1000,80));
+        Wall(FVector(CorridorEnd,0,0),FVector(55,1000,80));
+        Wall(FVector((CorridorEnd+Left)*.5f,-500,0),FVector(CorridorEnd-Left,55,80));
+        Wall(FVector((CorridorEnd+Left)*.5f,500,0),FVector(CorridorEnd-Left,55,80));
+        Stage.Box = GetWorld()->SpawnActor<ABDCrate>(Origin+FVector(CorridorBoxX,0,63),FRotator::ZeroRotator,Params);
+        Stage.Actors.Add(Stage.Box);
+        const float GoalStart = CorridorBoxX+850.f;
+        const float GoalRight = CorridorEnd-27.5f;
+        Stage.DeliveryGoal = GetWorld()->SpawnActor<ABDGoal>(Origin+FVector((GoalStart+GoalRight)*.5f,0,100),FRotator::ZeroRotator,Params);
+        Stage.DeliveryGoal->Extent = FVector((GoalRight-GoalStart)*.5f,472.5f,100);
+        Stage.DeliveryGoal->OnConstruction(Stage.DeliveryGoal->GetActorTransform());
+        Stage.Actors.Add(Stage.DeliveryGoal);
+        Stage.Player = GetWorld()->SpawnActor<ABDCharacter>(Origin+FVector(0,0,93),FRotator::ZeroRotator,Params);
+        Stage.Actors.Add(Stage.Player);
+        FreezeStage(Stage);
+        return;
+    }
     if (bGap)
     {
         Floor(FVector(-590,0,-35),FVector(820,900,70)); // Ends at -180.
@@ -135,6 +168,7 @@ void ABDTutorialGameMode::ActivateStage()
     Crate = Current.Box;
     Goal = Current.DeliveryGoal;
     bBoxBlasted = bPlayerBlasted = bWasAirborne = bResetRequested = false;
+    bChargeDoodleVisible = bGoalDoodleVisible = false;
     SuccessBomb.Reset();
     bWaitingForSuccessBomb = false;
     SuccessDelayStartedAt = 0.f;
@@ -155,6 +189,40 @@ void ABDTutorialGameMode::ActivateStage()
     Current.Player->SetActorTickEnabled(true);
     Current.Player->GetCharacterMovement()->SetMovementMode(MOVE_Falling);
     SetView(Current.Origin);
+    if (GetScene() == EBDTutorialScene::ChargeCorridor) UpdateCorridorView();
+}
+
+FVector ABDTutorialGameMode::GetCorridorDoodlePosition(int32 Index) const
+{
+    const float X = Index == 0 ? -220.f : Index == 1 ? CorridorBoxX-250.f : CorridorEnd-420.f;
+    return Current.Origin+FVector(X,270,10);
+}
+
+void ABDTutorialGameMode::UpdateCorridorView()
+{
+    auto* PC = Cast<ABDPlayerController>(UGameplayStatics::GetPlayerController(this,0));
+    if (!PC || !Current.Player) return;
+    PC->SetPlaygroundView(Current.Origin+FVector(0,0,40),1800.f,1100.f);
+    const float X = FMath::Clamp(Current.Player->GetActorLocation().X-Current.Origin.X,0.f,CorridorEnd-PC->GetViewWidth()*.46f);
+    PC->SetPlaygroundView(Current.Origin+FVector(X,0,40),1800.f,1100.f);
+    if (PhaseTime<.15f) return; // Wait for the first camera cache to use this view.
+    int32 W,H; PC->GetViewportSize(W,H);
+    auto Visible = [&](AActor* Actor, bool bFully)
+    {
+        if (!Actor || W<=0 || H<=0) return false;
+        FVector C,E; Actor->GetActorBounds(false,C,E);
+        float MinX=BIG_NUMBER,MinY=BIG_NUMBER,MaxX=-BIG_NUMBER,MaxY=-BIG_NUMBER;
+        for (int32 I=0;I<8;++I)
+        {
+            FVector2D P;
+            if (!PC->ProjectWorldLocationToScreen(C+E*FVector((I&1)?1:-1,(I&2)?1:-1,(I&4)?1:-1),P)) return false;
+            MinX=FMath::Min(MinX,float(P.X)); MaxX=FMath::Max(MaxX,float(P.X));
+            MinY=FMath::Min(MinY,float(P.Y)); MaxY=FMath::Max(MaxY,float(P.Y));
+        }
+        return bFully ? MinX>=8 && MaxX<=W-8 && MinY>=8 && MaxY<=H-8 : MaxX>8 && MinX<W-8 && MaxY>8 && MinY<H-8;
+    };
+    bChargeDoodleVisible |= Visible(Current.Box,true);
+    bGoalDoodleVisible |= Visible(Current.DeliveryGoal,false);
 }
 
 void ABDTutorialGameMode::Tick(float DeltaSeconds)
@@ -178,6 +246,7 @@ void ABDTutorialGameMode::Tick(float DeltaSeconds)
         return;
     }
     PhaseTime += DeltaSeconds;
+    if (GetScene() == EBDTutorialScene::ChargeCorridor) UpdateCorridorView();
     if (Phase == EBDTutorialPhase::Finished) return;
     ElapsedSeconds += DeltaSeconds;
     if (Phase == EBDTutorialPhase::Sliding)
@@ -246,6 +315,7 @@ void ABDTutorialGameMode::Tick(float DeltaSeconds)
             MarkSuccess();
         break;
     }
+    case EBDTutorialScene::ChargeCorridor:
     case EBDTutorialScene::Deliver:
         DeliverySettledFor = Goal && Goal->ContainsSettledCrate(Crate) ? DeliverySettledFor+DeltaSeconds : 0.f;
         if (DeliverySettledFor >= GetPhysicsSettings().GoalSettleSeconds) MarkSuccess();
@@ -320,6 +390,16 @@ void ABDTutorialGameMode::MarkSuccess(ABDBomb* BombToObserve)
 void ABDTutorialGameMode::StartSlide()
 {
     ClearTransientActors();
+    if (GetScene() == EBDTutorialScene::ChargeCorridor)
+    {
+        // The corridor spans several screens; start the retained five-scene sequence
+        // cleanly after its success feedback instead of sliding through its walls.
+        DestroyStage(Current);
+        ++SceneIndex;
+        BuildStage(Current,GetScene(),FVector::ZeroVector);
+        ActivateStage();
+        return;
+    }
     FreezeStage(Current);
     auto* PC = Cast<ABDPlayerController>(UGameplayStatics::GetPlayerController(this,0));
     SlideWidth = PC ? PC->GetViewWidth() : 3000.f;

@@ -155,7 +155,7 @@ public:
             UE_LOG(LogTemp,Display,TEXT("BD SCENE TEST: %s"),*Name);
             if (Begin) Begin(*F);
         }
-        if (bEntered && Until(*F)) return true;
+        if (bEntered && F->World && F->Mode && F->PC && F->Player && Until(*F)) return true;
         if (FPlatformTime::Seconds()-Started > 15.)
         {
             F->Test->AddError(TEXT("Timed out: ")+Name);
@@ -219,7 +219,7 @@ bool FBDFiveSceneTest::RunTest(const FString& Parameters)
             X.Test->TestEqual(TEXT("Sliding from the correct scene"),X.Mode->SceneIndex,Index);
             X.Test->TestFalse(TEXT("Input disabled"),X.Mode->IsGameplayInputAllowed());
             X.Key(EKeys::LeftMouseButton,IE_DoubleClick);
-            X.Key(EKeys::RightMouseButton,IE_Released);
+            X.Key(EKeys::LeftMouseButton,IE_Released);
             X.Test->TestNull(TEXT("No bomb during transition"),X.Mode->ActiveBomb.Get());
             if (Index==0) X.Shot(TEXT("03-slide.png"));
             return true;
@@ -228,6 +228,10 @@ bool FBDFiveSceneTest::RunTest(const FString& Parameters)
 
     Step(TEXT("Scene one is a clean playable ground with the wordless HUD"),[](FFixture& X)
     {
+        // The new entry corridor has its own visibility/persistence playthrough.
+        // Exercise the five retained lessons independently of that prerequisite.
+        X.Mode->SceneOrder = {EBDTutorialScene::Throw,EBDTutorialScene::MoveBox,EBDTutorialScene::PutDown,EBDTutorialScene::CrossGap,EBDTutorialScene::Deliver};
+        X.Mode->RestartTutorial();
         X.World->GetGameViewport()->GetGameViewport()->SetFixedViewportSize(1280,800);
         if (auto* Session=X.World->GetGameInstance<UBDAlphaSession>())
         {
@@ -270,7 +274,7 @@ bool FBDFiveSceneTest::RunTest(const FString& Parameters)
         X.Test->TestTrue(TEXT("Bomb is in flight"),X.Mode->ActiveBomb && !X.Mode->ActiveBomb->IsHeld());
         if (X.Mode->ActiveBomb) X.Test->TestTrue(TEXT("Release preserves remaining fuse"),X.Mode->ActiveBomb->GetRemainingFuse()<=X.SavedFuse);
         if (X.Mode->ActiveBomb) X.ExpectedExplosionAt = X.WorldMark+X.Mode->ActiveBomb->GetRemainingFuse();
-        X.Key(EKeys::RightMouseButton,IE_Pressed);
+        X.Key(EKeys::LeftMouseButton,IE_Pressed);
         X.Test->TestEqual(TEXT("Feedback blocks additional input"),X.Mode->BombsUsed,1);
     },[](FFixture& X)
     {
@@ -305,6 +309,11 @@ bool FBDFiveSceneTest::RunTest(const FString& Parameters)
         X.Test->TestTrue(TEXT("Crate reset to start"),FVector::Dist2D(X.Mode->Crate->GetActorLocation(),X.Mode->GetSceneOrigin()+FVector(150,0,63))<1);
         X.Aim(FVector(500,0,0));
         X.Key(EKeys::LeftMouseButton,IE_Pressed);
+        return true;
+    });
+    Step(TEXT("Charge long enough to reach the scene-two box"),{},[](FFixture& X)
+    {
+        if (!X.After(1.f)) return false;
         X.Key(EKeys::LeftMouseButton,IE_Released);
         return true;
     });
@@ -319,15 +328,15 @@ bool FBDFiveSceneTest::RunTest(const FString& Parameters)
         if (X.Mode->SceneIndex!=2 || !X.Mode->IsGameplayInputAllowed()) return false;
         X.Test->TestEqual(TEXT("No boxes remain"),X.Count<ABDCrate>(),0);
         X.Shot(TEXT("05-put-down.png"));
-        X.Key(EKeys::RightMouseButton,IE_Released);
+        X.Key(EKeys::LeftMouseButton,IE_Released);
         X.Test->TestEqual(TEXT("Release without hold does not succeed"),X.Mode->Phase,EBDTutorialPhase::Playing);
-        X.Key(EKeys::RightMouseButton,IE_Pressed);
+        X.Key(EKeys::LeftMouseButton,IE_Pressed);
         return true;
     });
     Step(TEXT("Holding alone does not complete placement; pause preserves fuse"),{},[](FFixture& X)
     {
         if (!X.After(.2)) return false;
-        X.Test->TestTrue(TEXT("RMB holds a bomb"),X.Mode->ActiveBomb && X.Mode->ActiveBomb->IsHeld());
+        X.Test->TestTrue(TEXT("LMB holds a bomb"),X.Mode->ActiveBomb && X.Mode->ActiveBomb->IsHeld());
         X.Test->TestEqual(TEXT("Holding is not putting down"),X.Mode->Phase,EBDTutorialPhase::Playing);
         if (!X.Mode->ActiveBomb) { X.bFailed=true; return true; }
         X.SavedFuse = X.Mode->ActiveBomb->GetRemainingFuse();
@@ -338,13 +347,13 @@ bool FBDFiveSceneTest::RunTest(const FString& Parameters)
     {
         if (!X.After(.2)) return false;
         X.Test->TestEqual(TEXT("Paused fuse"),X.Mode->ActiveBomb->GetRemainingFuse(),X.SavedFuse);
-        X.Key(EKeys::RightMouseButton,IE_Released);
+        X.Key(EKeys::LeftMouseButton,IE_Released);
         X.PC->TogglePause();
         X.PC->PlayerTick(1.f/120.f);
-        X.Test->TestEqual(TEXT("Grounded put-down immediately shows success"),X.Mode->Phase,EBDTutorialPhase::Success);
+        X.Test->TestTrue(TEXT("Paused release becomes a short toss on resume"),X.Mode->ActiveBomb && !X.Mode->ActiveBomb->IsHeld());
         return true;
     });
-    Step(TEXT("RMB release puts bomb on the actual floor"),{},[](FFixture& X)
+    Step(TEXT("LMB release puts bomb on the actual floor"),{},[](FFixture& X)
     {
         if (X.Mode->Phase!=EBDTutorialPhase::Success) return false;
         X.Test->TestTrue(TEXT("Released bomb remains live"),X.Mode->ActiveBomb && !X.Mode->ActiveBomb->IsHeld());
@@ -371,7 +380,7 @@ bool FBDFiveSceneTest::RunTest(const FString& Parameters)
         X.Test->TestTrue(TEXT("Player restored"),FVector::Dist2D(X.Player->GetActorLocation(),X.Mode->GetSceneOrigin()+FVector(-330,0,93))<1);
         X.Test->TestNull(TEXT("No stale bomb"),X.Mode->ActiveBomb.Get());
         X.Aim(FVector(500,0,0));
-        X.Key(EKeys::RightMouseButton,IE_Pressed);
+        X.Key(EKeys::LeftMouseButton,IE_Pressed);
         return true;
     });
     Step(TEXT("Held explosion crosses gap and lands on destination ground"),{},[](FFixture& X)
@@ -379,7 +388,7 @@ bool FBDFiveSceneTest::RunTest(const FString& Parameters)
         if (X.Mode->Phase!=EBDTutorialPhase::Success) return false;
         X.Test->TestTrue(TEXT("Grounded on other side"),X.Player->GetCharacterMovement()->IsMovingOnGround());
         X.Test->TestTrue(TEXT("Correct landing floor"),X.Player->GetCharacterMovement()->CurrentFloor.HitResult.GetActor()==X.Mode->GetLandingGround());
-        X.Key(EKeys::RightMouseButton,IE_Released);
+        X.Key(EKeys::LeftMouseButton,IE_Released);
         return true;
     });
     Step(TEXT("Final scene: large goal and crate start on second platform"),{},[](FFixture& X)
@@ -391,19 +400,41 @@ bool FBDFiveSceneTest::RunTest(const FString& Parameters)
         X.Test->TestTrue(TEXT("Goal is generous"),X.Mode->Goal->Extent.X>=300 && X.Mode->Goal->Extent.Y>=300);
         X.Shot(TEXT("07-deliver.png"));
         X.Aim(FVector(500,0,0));
-        X.Key(EKeys::RightMouseButton,IE_Pressed);
+        X.Key(EKeys::LeftMouseButton,IE_Pressed);
         return true;
     });
     Step(TEXT("Cross to final box using real held explosion"),{},[](FFixture& X)
     {
         if (X.Player->GetActorLocation().X-X.Mode->GetSceneOrigin().X<200 || !X.Player->GetCharacterMovement()->IsMovingOnGround()) return false;
-        X.Key(EKeys::RightMouseButton,IE_Released);
+        X.Key(EKeys::LeftMouseButton,IE_Released);
+        return true;
+    });
+    Step(TEXT("Walk around the package after the charged blast jump"),{},[](FFixture& X)
+    {
+        const FVector Target=X.Mode->GetSceneOrigin()+FVector(280,220,93);
+        const FVector Delta=Target-X.Player->GetActorLocation();
+        const bool bArrived=Delta.Size2D()<12.f;
+        const FVector Direction=Delta.GetSafeNormal2D();
+        X.Player->MoveInRoom(bArrived ? FVector2D::ZeroVector : FVector2D(Direction.X,Direction.Y)*.4f);
+        return bArrived && X.Player->GetVelocity().Size2D()<5.f;
+    });
+    Step(TEXT("Line up behind the original package"),{},[](FFixture& X)
+    {
+        const FVector Target=X.Mode->GetSceneOrigin()+FVector(280,0,93);
+        const FVector Delta=Target-X.Player->GetActorLocation();
+        const bool bArrived=Delta.Size2D()<10.f;
+        const FVector Direction=Delta.GetSafeNormal2D();
+        X.Player->MoveInRoom(bArrived ? FVector2D::ZeroVector : FVector2D(Direction.X,Direction.Y)*.3f);
+        return bArrived && X.Player->GetVelocity().Size2D()<5.f;
+    });
+    Step(TEXT("Quick LMB toss places a delivery bomb behind the package"),{},[](FFixture& X)
+    {
         // The cursor used for the jump is behind the player after landing. Aim again
         // before pressing: the input callback correctly derives facing from that cursor.
         X.Aim(FVector(500,0,0));
         X.PreviousCrate=X.Mode->Crate;
-        X.Key(EKeys::RightMouseButton,IE_Pressed);
-        X.Key(EKeys::RightMouseButton,IE_Released);
+        X.Key(EKeys::LeftMouseButton,IE_Pressed);
+        X.Key(EKeys::LeftMouseButton,IE_Released);
         ABDBomb* Bomb=X.Mode->ActiveBomb;
         if (!X.Test->TestNotNull(TEXT("Delivery uses a real dropped bomb"),Bomb))
         {

@@ -3,15 +3,14 @@
 #include "Tests/AutomationEditorCommon.h"
 #include "Editor.h"
 #include "../BDJungle.h"
+#include "../BDJungleProps.h"
+#include "../BDTutorialGameMode.h"
 #include "../BDAlphaSession.h"
 #include "../BDBomb.h"
-#include "../BDCrate.h"
-#include "../BDPuzzleActors.h"
 #include "../BDPlayerController.h"
-#include "Components/BoxComponent.h"
 #include "Components/CapsuleComponent.h"
-#include "GameFramework/CharacterMovementComponent.h"
 #include "Components/SphereComponent.h"
+#include "GameFramework/CharacterMovementComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "EngineUtils.h"
 #include "Engine/GameViewportClient.h"
@@ -19,584 +18,284 @@
 #include "ImageUtils.h"
 #include "Misc/FileHelper.h"
 #include "HAL/FileManager.h"
-#include "InputKeyEventArgs.h"
-#include "NavigationSystem.h"
-#include "NavigationPath.h"
-#include "AIController.h"
 
-namespace BDJungleTests
+namespace BDRedesignTests
 {
 struct FFixture
 {
     FAutomationTestBase* Test=nullptr;
     UWorld* World=nullptr;
-    ABDJungleGameMode* Mode=nullptr;
-    ABDJungleCharacter* Player=nullptr;
+    ABDGameMode* Mode=nullptr;
+    ABDCharacter* Player=nullptr;
     ABDPlayerController* PC=nullptr;
-    ABDWildMan* Guard=nullptr;
     ABDWildMan* Keeper=nullptr;
+    ABDBananaTree* Tree=nullptr;
+    ABDBananaPeel* Peel=nullptr;
     TWeakObjectPtr<ABDBomb> Banana;
-    TWeakObjectPtr<ABDBomb> FirstMeal, SecondMeal;
-    float BananaFuse=0;
+    FVector Saved, Direction;
     double Started=0;
+    float Mark=0;
+    float PatrolDistance=0;
+    FVector PatrolMin,PatrolMax;
     bool Failed=false;
-    FVector Saved, CrateStart;
-    int32 TargetIndex=0, Shots=0;
-    float LastShot=-10;
-    bool After(float Seconds) const { return FPlatformTime::Seconds()-Started>Seconds; }
+    bool CorridorOnly=false;
+    bool After(float S) const { return FPlatformTime::Seconds()-Started>S; }
+    ABDJungleGameMode* Jungle() const { return Cast<ABDJungleGameMode>(Mode); }
+    ABDTutorialGameMode* Tutorial() const { return Cast<ABDTutorialGameMode>(Mode); }
     void Refresh()
     {
         World=GEditor->PlayWorld;
-        if (!World) return;
-        Mode=World->GetAuthGameMode<ABDJungleGameMode>();
-        Player=Cast<ABDJungleCharacter>(UGameplayStatics::GetPlayerPawn(World,0));
-        PC=Cast<ABDPlayerController>(UGameplayStatics::GetPlayerController(World,0));
-        for (TActorIterator<ABDWildMan> It(World); It; ++It)
-        {
-            if (It->bPassageGuard) Guard=*It;
-            if (It->bGateOpener) Keeper=*It;
-        }
+        if(!World)return;
+        Mode=World->GetAuthGameMode<ABDGameMode>();PC=Cast<ABDPlayerController>(UGameplayStatics::GetPlayerController(World,0));
+        Player=PC?Cast<ABDCharacter>(PC->GetPawn()):nullptr;Keeper=nullptr;Tree=nullptr;Peel=nullptr;
+        for(TActorIterator<ABDWildMan> It(World);It;++It)Keeper=*It;
+        for(TActorIterator<ABDBananaTree> It(World);It;++It)if(It->bHasBananas && It->GetActorLocation().X<0)Tree=*It;
+        for(TActorIterator<ABDBananaPeel> It(World);It;++It)if(It->GetActorLocation().Y>0)Peel=*It;
     }
     void Place(FVector P)
     {
-        Player->EndSlide();
-        Player->GetCharacterMovement()->StopMovementImmediately();
-        P.Z = FMath::Max(P.Z, Player->GetCapsuleComponent()->GetScaledCapsuleHalfHeight()+2.f);
-        Player->SetActorLocation(P,false,nullptr,ETeleportType::TeleportPhysics);
-        Player->GetCharacterMovement()->SetMovementMode(MOVE_Falling);
+        Player->MoveInRoom(FVector2D::ZeroVector);Player->GetCharacterMovement()->StopMovementImmediately();
+        P.Z=Player->GetCapsuleComponent()->GetScaledCapsuleHalfHeight()+3;
+        Player->SetActorLocation(P,false,nullptr,ETeleportType::TeleportPhysics);Player->GetCharacterMovement()->SetMovementMode(MOVE_Falling);
     }
-    void Aim(FVector D)
+    void Walk(FVector P,float Speed=.45f)
+    {const FVector D=(P-Player->GetActorLocation()).GetSafeNormal2D();Player->FacePoint(P);Player->MoveInRoom(FVector2D(D.X,D.Y)*Speed);}
+    bool WalkAndStop(FVector P)
     {
-        Player->FacePoint(Player->GetActorLocation()+D);
-        FVector2D Screen;
-        if (PC->ProjectWorldLocationToScreen(Player->GetActorLocation()+D,Screen))
-            PC->SetMouseLocation(FMath::RoundToInt(Screen.X),FMath::RoundToInt(Screen.Y));
+        if(FVector::Dist2D(Player->GetActorLocation(),P)>8.f){Walk(P,.3f);return false;}
+        Player->MoveInRoom(FVector2D::ZeroVector);return Player->GetVelocity().Size2D()<5.f;
     }
-    void Key(FKey K,EInputEvent Event)
+    void QuickToss()
     {
-        PC->InputKey(FInputKeyEventArgs::CreateSimulated(K,Event,Event==IE_Released?0.f:1.f));
-        PC->PlayerTick(1.f/120.f);
+        Player->FacePoint(Player->GetActorLocation()+FVector(1000,0,0));
+        FVector2D Aim;PC->ProjectWorldLocationToScreen(Player->GetActorLocation()+FVector(500,0,0),Aim);
+        PC->SetMouseLocation(FMath::RoundToInt(Aim.X),FMath::RoundToInt(Aim.Y));
+        for(EInputEvent Event:{IE_Pressed,IE_Released})
+        {PC->InputKey(FInputKeyEventArgs::CreateSimulated(EKeys::LeftMouseButton,Event,Event==IE_Pressed?1.f:0.f));PC->PlayerTick(1.f/120.f);}
     }
     void Shot(const TCHAR* Name)
     {
-        if (!FParse::Param(FCommandLine::Get(),TEXT("BDJungleScreenshots"))) return;
-        const FString Folder=FPaths::ProjectSavedDir()/TEXT("Automation/JungleShots");
-        IFileManager::Get().MakeDirectory(*Folder,true);
-        FViewport* View=World->GetGameViewport()->Viewport;
-        TArray<FColor> Pixels;
-        if (View && View->ReadPixels(Pixels))
-        {
-            TArray64<uint8> PNG;
-            const FIntPoint Size=View->GetSizeXY();
-            FImageUtils::PNGCompressImageArray(Size.X,Size.Y,Pixels,PNG);
-            FFileHelper::SaveArrayToFile(PNG,*(Folder/Name));
-        }
+        const FString Folder=FPaths::ProjectSavedDir()/TEXT("Automation/RedesignShots");IFileManager::Get().MakeDirectory(*Folder,true);
+        FViewport* View=World->GetGameViewport()->Viewport;TArray<FColor> Pixels;
+        if(View && View->ReadPixels(Pixels))
+        {TArray64<uint8> PNG;const FIntPoint S=View->GetSizeXY();FImageUtils::PNGCompressImageArray(S.X,S.Y,Pixels,PNG);FFileHelper::SaveArrayToFile(PNG,*(Folder/Name));}
     }
-    void ClearBomb() { if (Mode->ActiveBomb) Mode->ActiveBomb->Destroy(); }
-    void Diagnostics() const
-    {
-        if (Player) UE_LOG(LogTemp,Display,TEXT("JUNGLE PLAYER at=%s sliding=%d move=%s"),
-            *Player->GetActorLocation().ToString(),Player->IsSliding(),*Player->GetVelocity().ToString());
-        if (Mode && Mode->ActiveBomb)
-        {
-            const ABDBomb* B=Mode->ActiveBomb;
-            UE_LOG(LogTemp,Display,TEXT("JUNGLE DIAGNOSTIC bomb=%s banana=%d held=%d resting=%d consumed=%d velocity=%s radius=%.1f"),
-                *B->GetActorLocation().ToString(),B->IsBanana(),B->IsHeld(),B->IsRestingBanana(),B->IsBeingEaten(),
-                *B->Collision->GetPhysicsLinearVelocity().ToString(),B->GetWorldRadius());
-        }
-        else UE_LOG(LogTemp,Display,TEXT("JUNGLE DIAGNOSTIC no active bomb"));
-        for (ABDWildMan* Wild : {Guard,Keeper}) if (Wild)
-        {
-            const AAIController* AI=Cast<AAIController>(Wild->GetController());
-            UE_LOG(LogTemp,Display,TEXT("JUNGLE DIAGNOSTIC wild=%s keeper=%d AI=%s navStatus=%d distracted=%d eating=%d velocity=%s moveMode=%d"),
-                *Wild->GetActorLocation().ToString(),Wild->bGateOpener,*GetNameSafe(AI),AI?int32(AI->GetMoveStatus()):-1,
-                Wild->IsDistracted(),Wild->IsEating(),*Wild->GetVelocity().ToString(),int32(Wild->GetCharacterMovement()->MovementMode));
-            if (Mode && Mode->ActiveBomb)
-            {
-                const FVector Food=Mode->ActiveBomb->GetActorLocation();
-                auto* Nav=FNavigationSystem::GetCurrent<UNavigationSystemV1>(World);
-                FNavLocation Projected;
-                const bool bProjected=Nav && Nav->ProjectPointToNavigation(Food,Projected,FVector(100,100,200));
-                const auto* Path=UNavigationSystemV1::FindPathToLocationSynchronously(World,Wild->GetActorLocation(),Food,Wild);
-                FHitResult Hit;
-                FCollisionQueryParams Sight(SCENE_QUERY_STAT(JungleDiagnostic),false,Wild);
-                Sight.AddIgnoredActor(Mode->ActiveBomb);
-                const bool bBlocked=World->LineTraceSingleByChannel(Hit,Wild->GetActorLocation(),Food,ECC_Visibility,Sight);
-                UE_LOG(LogTemp,Display,TEXT("JUNGLE NAV keeper=%d bombAffectsNav=%d projected=%d at=%s pathValid=%d partial=%d points=%d sightBlocked=%d blocker=%s"),
-                    Wild->bGateOpener,Mode->ActiveBomb->Collision->CanEverAffectNavigation(),bProjected,*Projected.Location.ToString(),
-                    Path && Path->IsValid(),Path && Path->IsPartial(),Path?Path->PathPoints.Num():0,bBlocked,*GetNameSafe(Hit.GetActor()));
-            }
-        }
-    }
+    template<class T> int32 Count()const{int32 N=0;for(TActorIterator<T> It(World);It;++It)++N;return N;}
 };
 using FAction=TFunction<void(FFixture&)>;
 using FCondition=TFunction<bool(FFixture&)>;
-class FStep : public IAutomationLatentCommand
+class FStep:public IAutomationLatentCommand
 {
-    TSharedRef<FFixture> F;
-    FString Name;
-    FAction Begin;
-    FCondition Until;
-    double Waiting=0;
-    float Timeout;
-    bool Entered=false;
-    bool Reported=false;
+    TSharedRef<FFixture> F;FString Name;FAction Begin;FCondition Until;double Waiting=0;bool Entered=false;
 public:
-    FStep(TSharedRef<FFixture> InF,FString InName,FAction InBegin,FCondition InUntil,float InTimeout)
-        :F(InF),Name(InName),Begin(MoveTemp(InBegin)),Until(MoveTemp(InUntil)),Timeout(InTimeout) {}
-    virtual bool Update() override
+    FStep(TSharedRef<FFixture> In,FString N,FAction B,FCondition U):F(In),Name(N),Begin(MoveTemp(B)),Until(MoveTemp(U)){}
+    virtual bool Update()override
     {
-        if (F->Failed) return true;
-        // Latent steps are all constructed together; start each timeout only
-        // when it actually becomes active, including delayed respawn waits.
-        if (Waiting<=0) Waiting=FPlatformTime::Seconds();
-        F->Refresh();
-        if (!Entered && F->Mode && F->Player && F->PC && !F->Player->IsRecovering())
+        if(F->Failed)return true;if(Waiting==0)Waiting=FPlatformTime::Seconds();F->Refresh();
+        if(F->CorridorOnly && F->Tutorial() && F->Tutorial()->GetScene()!=EBDTutorialScene::ChargeCorridor)
+        {F->Test->AddError(TEXT("An archived lesson appeared in the active tutorial flow"));F->Failed=true;return true;}
+        if(!Entered && F->Mode && F->Player && F->PC)
+        {Entered=true;F->Started=Waiting=FPlatformTime::Seconds();F->Test->AddInfo(Name);UE_LOG(LogTemp,Display,TEXT("REDESIGN TEST: %s"),*Name);if(Begin)Begin(*F);}
+        if(Entered && IsValid(F->World) && IsValid(F->Mode) && IsValid(F->Player) && IsValid(F->PC) && Until(*F))return true;
+        if(FPlatformTime::Seconds()-Waiting>20)
         {
-            Entered=true; F->Started=Waiting=FPlatformTime::Seconds();
-            F->Test->AddInfo(Name); UE_LOG(LogTemp,Display,TEXT("JUNGLE TEST: %s"),*Name);
-            if (Begin) Begin(*F);
-        }
-        if (Entered && Until(*F)) return true;
-        if (Entered && !Reported && FPlatformTime::Seconds()-Waiting>8.f)
-        { F->Diagnostics(); Reported=true; }
-        if (FPlatformTime::Seconds()-Waiting>Timeout)
-        {
-            F->Test->AddError(TEXT("Timed out: ")+Name);
-            F->Diagnostics();
-            if (F->Player && F->Mode->Crate)
-                F->Test->AddInfo(FString::Printf(TEXT("Player=%s crate=%s slide=%f route=%d shots=%d guard=%s"),
-                    *F->Player->GetActorLocation().ToString(),*F->Mode->Crate->GetActorLocation().ToString(),F->Player->GetSlideRemaining(),
-                    F->TargetIndex,F->Shots,F->Guard?*F->Guard->GetActorLocation().ToString():TEXT("none")));
-            F->Shot(TEXT("failure.png")); F->Failed=true; return true;
+            F->Test->AddError(TEXT("Timed out: ")+Name);F->Failed=true;
+            if(F->Player)F->Test->AddInfo(FString::Printf(TEXT("Player=%s"),*F->Player->GetActorLocation().ToString()));
+            if(F->Keeper)F->Test->AddInfo(FString::Printf(TEXT("Keeper=%s distracted=%d eating=%d"),*F->Keeper->GetActorLocation().ToString(),F->Keeper->IsDistracted(),F->Keeper->IsEating()));
+            if(F->Banana.IsValid())F->Test->AddInfo(FString::Printf(TEXT("Food=%s resting=%d"),*F->Banana->GetActorLocation().ToString(),F->Banana->IsRestingBanana()));
+            F->Shot(TEXT("failure.png"));return true;
         }
         return false;
     }
 };
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBDJungleTest,"BlastDelivery.Jungle.MechanicsAndDelivery",
-    EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
-bool FBDJungleTest::RunTest(const FString& Parameters)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBDChargeCorridorTest,"BlastDelivery.Redesign.Corridor",EAutomationTestFlags::EditorContext|EAutomationTestFlags::ProductFilter)
+bool FBDChargeCorridorTest::RunTest(const FString& Parameters)
 {
-    using namespace BDJungleTests;
-    ADD_LATENT_AUTOMATION_COMMAND(FEditorLoadMap(TEXT("/Game/Maps/JungleBananaTrap")));
+    using namespace BDRedesignTests;
+    ADD_LATENT_AUTOMATION_COMMAND(FEditorLoadMap(TEXT("/Game/Maps/FiveSceneTutorial")));
     ADD_LATENT_AUTOMATION_COMMAND(FStartPIECommand(false));
-    auto F=MakeShared<FFixture>(); F->Test=this;
-    auto Step=[&](const TCHAR* Name,FAction Begin,FCondition Until,float Timeout=20.f)
-    { FAutomationTestFramework::Get().EnqueueLatentCommand(MakeShared<FStep>(F,Name,MoveTemp(Begin),MoveTemp(Until),Timeout)); };
-    Step(TEXT("Enter Jungle through the Alpha catalog"),[](FFixture& X)
-    { X.World->GetGameInstance<UBDAlphaSession>()->StartLevel(4); },[](FFixture& X)
+    auto F=MakeShared<FFixture>();F->Test=this;F->CorridorOnly=true;
+    auto Step=[&](const TCHAR* N,FAction B,FCondition U){FAutomationTestFramework::Get().EnqueueLatentCommand(MakeShared<FStep>(F,N,MoveTemp(B),MoveTemp(U)));};
+    Step(TEXT("Tutorial selection starts corridor"),[](FFixture& X){X.World->GetGameInstance<UBDAlphaSession>()->StartTutorial();},[](FFixture& X)
+    {return X.After(1) && X.Tutorial() && X.World->GetGameInstance<UBDAlphaSession>()->GetScreen()==EBDAlphaScreen::Playing;});
+    Step(TEXT("Entry framing"),[](FFixture& X){X.World->GetGameViewport()->GetGameViewport()->SetFixedViewportSize(1280,800);X.Tutorial()->RestartTutorial();},[](FFixture& X)
     {
-        return X.After(1.f) && X.World->GetGameInstance<UBDAlphaSession>()->GetScreen()==EBDAlphaScreen::Playing;
+        if(!X.After(.8f))return false;X.PC->SetActorTickEnabled(false);
+        X.Test->TestEqual(TEXT("Only one active scene"),X.Tutorial()->SceneOrder.Num(),1);X.Test->TestEqual(TEXT("Corridor is the first and only scene"),X.Tutorial()->GetScene(),EBDTutorialScene::ChargeCorridor);
+        X.Test->TestEqual(TEXT("Configured defaults also contain only the corridor"),GetDefault<ABDTutorialGameMode>()->SceneOrder.Num(),1);
+        FVector2D P;X.PC->ProjectWorldLocationToScreen(X.Mode->Crate->GetActorLocation(),P);
+        X.Test->TestTrue(TEXT("Half box at right edge"),FMath::Abs(P.X-1280)<5);X.Test->TestFalse(TEXT("Charge hidden initially"),X.Tutorial()->IsChargeDoodleVisible());
+        X.Test->TestFalse(TEXT("Goal hidden initially"),X.Tutorial()->IsGoalDoodleVisible());X.Saved=X.Tutorial()->GetCorridorDoodlePosition(0);X.Shot(TEXT("01-corridor-entry.png"));return true;
     });
-    Step(TEXT("Saved Jungle map has navigation, two zones, crate and separate rules"),[](FFixture& X)
+    Step(TEXT("Walk to reveal charge instruction"),{},[](FFixture& X)
+    {if(!X.Tutorial()->IsChargeDoodleVisible()){X.Walk(FVector(250,0,93));return false;}X.Player->MoveInRoom(FVector2D::ZeroVector);X.Shot(TEXT("02-corridor-charge.png"));return true;});
+    Step(TEXT("Backtracking keeps instructions"),{},[](FFixture& X)
     {
-        X.World->GetGameViewport()->GetGameViewport()->SetFixedViewportSize(1440,1000);
-    },[](FFixture& X)
-    {
-        if (!X.After(2)) return false;
-        X.PC->SetActorTickEnabled(false); X.World->GetGameInstance<UBDAlphaSession>()->SetSimpleControls(false);
-        X.Test->TestNotNull(TEXT("Crate"),X.Mode->Crate.Get());
-        X.Test->TestNotNull(TEXT("Goal"),X.Mode->Goal.Get());
-        X.Test->TestNotNull(TEXT("Guardian"),X.Guard);
-        X.Test->TestNotNull(TEXT("Lower-right gatekeeper"),X.Keeper);
-        X.Test->TestTrue(TEXT("Long eating window"),X.Mode->Settings->EatingSeconds>=20.f);
-        X.Test->TestFalse(TEXT("Passage starts guarded"),X.Mode->bPassageCleared);
-        int32 Zones=0; for (TActorIterator<ABDBananaZone> It(X.World); It; ++It) ++Zones;
-        X.Test->TestEqual(TEXT("Exactly two zones"),Zones,2);
-        X.CrateStart=X.Mode->Crate->GetActorLocation();
-        X.Mode->Settings->SpawnIntervalMin=200;
-        X.Mode->Settings->SpawnIntervalMax=200;
-        auto* Path=UNavigationSystemV1::FindPathToLocationSynchronously(X.World,X.Guard->GetActorLocation(),X.Mode->Settings->ClearingCenter);
-        X.Test->TestTrue(TEXT("Complete nav path around ruins into clearing"),Path && Path->IsValid() && !Path->IsPartial());
-        X.Shot(TEXT("01-start.png"));
-        return true;
+        if(X.Player->GetActorLocation().X>8){X.Walk(FVector(0,0,93));return false;}X.Player->MoveInRoom(FVector2D::ZeroVector);
+        X.Test->TestTrue(TEXT("Charge stays unlocked"),X.Tutorial()->IsChargeDoodleVisible());X.Test->TestEqual(TEXT("Fixed world anchor"),X.Tutorial()->GetCorridorDoodlePosition(0),X.Saved);
+        X.Place(FVector(X.Tutorial()->GetCorridorEnd()-1600,-220,93));return true;
     });
-    Step(TEXT("Walk from start onto helpful peel"),[](FFixture& X){X.Aim(FVector(0,-500,0));},[](FFixture& X)
+    Step(TEXT("Goal visibility reveals delivery instruction"),{},[](FFixture& X)
+    {if(!X.Tutorial()->IsGoalDoodleVisible()){X.Walk(FVector(X.Tutorial()->GetCorridorEnd()-900,-220,93));return false;}X.Player->MoveInRoom(FVector2D::ZeroVector);X.Shot(TEXT("03-corridor-goal.png"));return true;});
+    Step(TEXT("Goal instruction persists after backtracking"),[](FFixture& X){X.Place(FVector(0,0,93));},[](FFixture& X)
+    {if(!X.After(.3f))return false;X.Test->TestTrue(TEXT("Delivery doodle remains revealed"),X.Tutorial()->IsGoalDoodleVisible());X.Place(FVector(X.Tutorial()->GetCorridorEnd()-900,0,93));return true;});
+    Step(TEXT("Partial goal overlap cannot win"),[](FFixture& X)
+    {X.Mode->Crate->Mesh->SetSimulatePhysics(false);X.Mode->Crate->SetActorLocation(X.Mode->Goal->GetActorLocation()+FVector(-X.Mode->Goal->Extent.X+20,0,-39),false,nullptr,ETeleportType::TeleportPhysics);},[](FFixture& X)
+    {if(!X.After(1.2f))return false;X.Test->TestEqual(TEXT("Partial overlap still playing"),X.Tutorial()->Phase,EBDTutorialPhase::Playing);X.Tutorial()->RestartTutorial();return true;});
+    Step(TEXT("Walk from entry to first bomb position"),{},[](FFixture& X)
     {
-        X.Player->MoveInRoom(FVector2D(0,-1));
-        if (!X.Player->IsSliding()) return false;
-        X.Saved=X.Player->GetActorLocation();
-        return true;
+        if(!X.WalkAndStop(X.Mode->Crate->GetActorLocation()-FVector(270,0,0)))return false;
+        X.Test->TestEqual(TEXT("Goal fills corridor width"),X.Mode->Goal->Extent.Y,472.5);
+        X.Saved=X.Mode->Crate->GetActorLocation();X.QuickToss();return true;
     });
-    Step(TEXT("First peel locks facing and moves exactly five tiles"),[](FFixture& X)
+    Step(TEXT("Retreat from first blast"),[](FFixture& X){X.Direction=X.Player->GetActorLocation()+FVector(0,330,0);},[](FFixture& X){return X.WalkAndStop(X.Direction);});
+    Step(TEXT("First bomb advances package but leaves second push"),{},[](FFixture& X)
     {
-        // Account for the partial first tick between the trigger and observation.
-        X.Saved=X.Player->GetActorLocation()+FVector(0,800-X.Player->GetSlideRemaining(),0);
-        X.Aim(FVector(500,0,0));
-    },[](FFixture& X)
-    {
-        X.Player->MoveInRoom(FVector2D(1,0));
-        if (X.Player->IsSliding()) return false;
-        X.Test->TestTrue(TEXT("Exactly 800 cm"),FMath::IsNearlyEqual(FVector::Dist2D(X.Saved,X.Player->GetActorLocation()),800.f,2.f));
-        X.Test->TestTrue(TEXT("No steering during slide"),FMath::Abs(X.Player->GetActorLocation().X-X.Saved.X)<1);
-        X.Aim(FVector(0,-500,0)); return true;
+        if(X.Mode->ActiveBomb || X.Mode->Crate->Mesh->GetPhysicsLinearVelocity().Size()>5.f || !X.After(1))return false;
+        X.Test->AddInfo(FString::Printf(TEXT("First bomb advanced %.1f cm"),X.Mode->Crate->GetActorLocation().X-X.Saved.X));
+        X.Test->TestTrue(TEXT("First bomb moves package"),X.Mode->Crate->GetActorLocation().X>X.Saved.X+300);
+        X.Test->TestEqual(TEXT("Second bomb still needed"),X.Tutorial()->Phase,EBDTutorialPhase::Playing);return true;
     });
-    Step(TEXT("Second lane peel reaches Zone A"),{},[](FFixture& X)
+    Step(TEXT("Walk around package for second throw"),{},[](FFixture& X){return X.WalkAndStop(X.Mode->Crate->GetActorLocation()+FVector(-270,330,0));});
+    Step(TEXT("Line up and throw second bomb"),{},[](FFixture& X)
+    {if(!X.WalkAndStop(X.Mode->Crate->GetActorLocation()-FVector(270,0,0)))return false;X.QuickToss();return true;});
+    Step(TEXT("Retreat from second blast"),[](FFixture& X){X.Direction=X.Player->GetActorLocation()+FVector(0,330,0);},[](FFixture& X){return X.WalkAndStop(X.Direction);});
+    Step(TEXT("Settled delivery shows success"),{},[](FFixture& X){if(X.Tutorial()->Phase!=EBDTutorialPhase::Success || X.Tutorial()->GetPhaseTime()<.18f)return false;X.Shot(TEXT("04-corridor-success.png"));return true;});
+    Step(TEXT("Corridor delivery finishes the tutorial"),{},[](FFixture& X)
     {
-        if (!X.Player->IsSliding()) X.Player->MoveInRoom(FVector2D(0,-1));
-        if (!X.Mode->bReachedZoneBySlide) return false;
-        X.Player->GetCharacterMovement()->StopMovementImmediately();
-        X.Shot(TEXT("02-zone-a.png")); return true;
+        if(X.Tutorial()->Phase!=EBDTutorialPhase::Finished)return false;
+        X.Test->TestTrue(TEXT("Tutorial completed after corridor"),X.Mode->bCompleted);
+        X.Test->TestEqual(TEXT("Completion remains on corridor index zero"),X.Tutorial()->SceneIndex,0);
+        X.Test->TestEqual(TEXT("Two-bomb delivery preserved"),X.Mode->BombsUsed,2);
+        X.Saved=X.Mode->Crate->GetActorLocation();return true;
     });
-    Step(TEXT("Step away from the north wall to throw through Zone A's opening"),{},[](FFixture& X)
+    Step(TEXT("No archived scene or pending transition after completion"),{},[](FFixture& X)
     {
-        const FVector Delta=FVector(-990,-800,X.Player->GetActorLocation().Z)-X.Player->GetActorLocation();
-        if (Delta.Size2D()<12.f)
-        {
-            X.Player->MoveInRoom(FVector2D::ZeroVector);
-            X.Player->GetCharacterMovement()->StopMovementImmediately();
-            return true;
-        }
-        const FVector Direction=Delta.GetSafeNormal2D();
-        X.Player->MoveInRoom(FVector2D(Direction.X,Direction.Y));
-        return false;
+        if(!X.After(2.f))return false;
+        X.Test->TestEqual(TEXT("Finished phase persists"),X.Tutorial()->Phase,EBDTutorialPhase::Finished);
+        X.Test->TestFalse(TEXT("Finished tutorial disables gameplay"),X.Mode->IsGameplayInputAllowed());
+        X.Test->TestEqual(TEXT("Only corridor player remains"),X.Count<ABDCharacter>(),1);
+        X.Test->TestEqual(TEXT("Delivered package stays in corridor"),X.Mode->Crate->GetActorLocation(),X.Saved);
+        X.PC->SetActorTickEnabled(true);return true;
     });
-    Step(TEXT("Held banana survives past the regular fuse"),[](FFixture& X)
+    Step(TEXT("Normal controller flow opens tutorial results"),{},[](FFixture& X)
     {
-        X.Aim(FVector(600,0,0)); X.Key(EKeys::RightMouseButton,IE_Pressed);
-        X.Test->TestTrue(TEXT("Zone A creates banana"),X.Mode->ActiveBomb && X.Mode->ActiveBomb->IsBanana());
-        ABDBomb* First=X.Mode->ActiveBomb;
-        X.Banana=First; X.BananaFuse=First->GetRemainingFuse();
-        X.Player->DrawBomb(); X.Test->TestEqual(TEXT("One active bomb"),X.Mode->ActiveBomb.Get(),First);
-    },[](FFixture& X)
-    {
-        if (!X.After(4.6f)) return false;
-        X.Test->TestTrue(TEXT("Held banana persists"),X.Banana.IsValid() && X.Banana->IsHeld());
-        if (X.Banana.IsValid()) X.Test->TestEqual(TEXT("Banana fuse does not count down"),X.Banana->GetRemainingFuse(),X.BananaFuse);
-        return true;
+        auto* Session=X.World->GetGameInstance<UBDAlphaSession>();
+        if(Session->GetScreen()!=EBDAlphaScreen::Results)return false;
+        X.Test->TestTrue(TEXT("Results belong to tutorial"),Session->IsTutorial());X.Shot(TEXT("14-corridor-complete.png"));return true;
     });
-    Step(TEXT("LMB throws persistent banana into side clearing"),[](FFixture& X)
+    Step(TEXT("Replay from results returns directly to corridor"),[](FFixture& X){X.World->GetGameInstance<UBDAlphaSession>()->Replay();},[](FFixture& X)
     {
-        X.Key(EKeys::LeftMouseButton,IE_Pressed); X.Key(EKeys::LeftMouseButton,IE_Released); X.Key(EKeys::RightMouseButton,IE_Released);
-    },[](FFixture& X)
-    {
-        if (!X.Banana.IsValid() || !X.Banana->IsRestingBanana() || !X.Guard->IsDistracted()) return false;
-        X.Test->TestTrue(TEXT("Guard distracted by real thrown banana"),X.Guard->IsDistracted());
-        X.Test->TestFalse(TEXT("Landing alone does not remove barricade"),X.Mode->Passage->bOpen);
-        X.Test->TestTrue(TEXT("Banana did not move crate"),FVector::Dist2D(X.CrateStart,X.Mode->Crate->GetActorLocation())<1);
-        return true;
+        if(!X.After(1.f) || X.World->GetGameInstance<UBDAlphaSession>()->GetScreen()!=EBDAlphaScreen::Playing)return false;
+        X.Test->TestEqual(TEXT("Replay starts corridor index zero"),X.Tutorial()->SceneIndex,0);
+        X.Test->TestEqual(TEXT("Replay remains a single scene"),X.Tutorial()->SceneOrder.Num(),1);
+        X.Test->TestEqual(TEXT("Replay is playable"),X.Tutorial()->Phase,EBDTutorialPhase::Playing);
+        X.Test->TestFalse(TEXT("Replay clears completion"),X.Mode->bCompleted);
+        X.Test->TestFalse(TEXT("Replay resets charge reveal"),X.Tutorial()->IsChargeDoodleVisible());
+        X.Test->TestFalse(TEXT("Replay resets goal reveal"),X.Tutorial()->IsGoalDoodleVisible());return true;
     });
-    Step(TEXT("Upper wild man picks up banana and immediately frees bomb slot"),{},[](FFixture& X)
+    Step(TEXT("Restart key while playing returns directly to corridor"),[](FFixture& X)
     {
-        if (!X.Guard->IsEating()) return false;
-        X.FirstMeal=X.Banana;
-        X.Test->TestTrue(TEXT("Banana remains visibly carried"),X.FirstMeal.IsValid() && X.FirstMeal->GetConsumer()==X.Guard);
-        X.Test->TestNull(TEXT("Pickup frees slot before consumption"),X.Mode->ActiveBomb.Get());
-        X.Test->TestFalse(TEXT("Feeding upper wild man cannot open barricade"),X.Mode->Passage->bOpen);
-        X.TargetIndex=0;
-        X.Shot(TEXT("03-guard-eating.png")); return true;
-    });
-    Step(TEXT("Walk from Zone A to Zone B during the first meal"),{},[](FFixture& X)
-    {
-        const TArray<FVector> Walk={FVector(600,-240,66),FVector(640,40,66)};
-        FVector Delta=Walk[X.TargetIndex]-X.Player->GetActorLocation(); Delta.Z=0;
-        if (Delta.Size2D()<15.f)
-        {
-            if (++X.TargetIndex==Walk.Num())
-            {
-                X.Player->ConsumeMovementInputVector();
-                X.Player->GetCharacterMovement()->StopMovementImmediately();
-                X.Test->TestTrue(TEXT("Upper wild man stays eating throughout traversal"),X.Guard->IsEating());
-                return true;
-            }
-            Delta=Walk[X.TargetIndex]-X.Player->GetActorLocation(); Delta.Z=0;
-        }
-        const FVector D=Delta.GetSafeNormal2D(); X.Player->MoveInRoom(FVector2D(D.X,D.Y));
-        return false;
-    });
-    Step(TEXT("Throw second banana just north of locked gate while first is carried"),[](FFixture& X)
-    {
-        X.Aim(FVector(270,380,66)-X.Player->GetActorLocation());
-        X.Key(EKeys::RightMouseButton,IE_Pressed);
-        X.SecondMeal=X.Mode->ActiveBomb;
-        X.Test->TestTrue(TEXT("Second banana can be drawn during eating"),X.SecondMeal.IsValid() && X.SecondMeal->IsBanana());
-        X.Key(EKeys::LeftMouseButton,IE_Pressed); X.Key(EKeys::LeftMouseButton,IE_Released); X.Key(EKeys::RightMouseButton,IE_Released);
-        // Drawing again at the grip intentionally picks up a just-thrown bomb
-        // in the shared Alpha controls. Inspect ownership without new input.
-        X.Test->TestTrue(TEXT("Second banana was released"),X.SecondMeal.IsValid() && !X.SecondMeal->IsHeld());
-        X.Test->TestEqual(TEXT("In-flight second banana still occupies slot"),X.Mode->ActiveBomb.Get(),X.SecondMeal.Get());
-    },[](FFixture& X)
-    {
-        if (!X.SecondMeal.IsValid() || !X.SecondMeal->IsRestingBanana()) return false;
-        X.Test->TestTrue(TEXT("Old banana remains with upper eater"),X.FirstMeal.IsValid() && X.FirstMeal->GetConsumer()==X.Guard);
         X.Player->DrawBomb();
-        X.Test->TestEqual(TEXT("Free ground banana blocks another draw"),X.Mode->ActiveBomb.Get(),X.SecondMeal.Get());
-        X.Test->TestFalse(TEXT("Gate does not open remotely on landing"),X.Mode->Passage->bOpen);
-        return true;
-    });
-    Step(TEXT("Lower-right wild man approaches and opens gate before eating"),{},[](FFixture& X)
-    {
-        if (!X.Mode->bPassageCleared) return false;
-        X.Test->TestTrue(TEXT("Keeper reached gate physically"),FVector::Dist2D(X.Keeper->GetActorLocation(),X.Mode->GetGateApproach())<90.f);
-        X.Test->TestTrue(TEXT("Gate opens while banana is still free"),X.SecondMeal.IsValid() && X.SecondMeal->IsRestingBanana());
-        X.Test->TestTrue(TEXT("Upper wild man remains occupied"),X.Guard->IsEating());
-        X.Shot(TEXT("03-gate-open.png")); return true;
-    });
-    Step(TEXT("Keeper passes through opened gate and picks up second banana"),{},[](FFixture& X)
-    {
-        if (!X.Keeper->IsEating()) return false;
-        X.Test->TestTrue(TEXT("Second banana belongs to keeper"),X.SecondMeal.IsValid() && X.SecondMeal->GetConsumer()==X.Keeper);
-        X.Test->TestNull(TEXT("Both carried bananas leave slot free"),X.Mode->ActiveBomb.Get());
-        X.Test->TestTrue(TEXT("Two meals coexist"),X.Guard->IsEating());
-        X.Test->TestTrue(TEXT("Food never moves crate"),FVector::Dist2D(X.CrateStart,X.Mode->Crate->GetActorLocation())<1);
-        X.Shot(TEXT("03-two-meals.png")); return true;
-    });
-    Step(TEXT("Old meal finishing does not clear a newer free banana"),[](FFixture& X)
-    {
-        X.Mode->Settings->BananaAttractionRange=0;
-        X.Player->DrawBomb(); X.Banana=X.Mode->ActiveBomb;
-        X.Test->TestTrue(TEXT("Third banana created while two meals coexist"),X.Banana.IsValid() && X.Banana->IsBanana());
-        X.Player->DropBomb(); X.Place(X.Player->GetSpawnPosition());
+        X.Test->TestNotNull(TEXT("Restart has a live bomb to clear"),X.Mode->ActiveBomb.Get());
+        X.Test->TestEqual(TEXT("Restart begins after using a bomb"),X.Mode->BombsUsed,1);
+        X.PC->InputKey(FInputKeyEventArgs::CreateSimulated(EKeys::R,IE_Pressed,1.f));X.PC->PlayerTick(1.f/120.f);
+        X.PC->InputKey(FInputKeyEventArgs::CreateSimulated(EKeys::R,IE_Released,0.f));
     },[](FFixture& X)
     {
-        if (X.FirstMeal.IsValid()) return false;
-        X.Test->TestEqual(TEXT("Meal destruction preserves newer active slot"),X.Mode->ActiveBomb.Get(),X.Banana.Get());
-        X.Test->TestTrue(TEXT("New free banana persists"),X.Banana.IsValid() && X.Banana->IsRestingBanana());
-        X.Mode->RestartTutorial();
-        X.Test->TestFalse(TEXT("Retry clears carried food too"),X.SecondMeal.IsValid());
-        X.Test->TestNull(TEXT("Retry clears active slot"),X.Mode->ActiveBomb.Get());
-        X.Test->TestFalse(TEXT("Retry resets keeper's meal"),X.Keeper->IsEating());
-        X.Test->TestTrue(TEXT("Opened gate stays open on retry"),X.Mode->Passage->bOpen);
-        X.Mode->Settings->BananaAttractionRange=2400;
-        return true;
-    },35.f);
-    for (FVector P : {FVector(-980,-800,66),FVector(580,80,66)})
-    {
-        Step(TEXT("Zone boundary converts held bomb without a new fuse or active slot"),[P](FFixture& X)
-        {
-            X.Place(FVector(-400,840,66)); X.Player->DrawBomb();
-            X.Test->TestFalse(TEXT("Outside zone creates regular bomb"),X.Mode->ActiveBomb->IsBanana());
-            const float Fuse=X.Mode->ActiveBomb->GetRemainingFuse();
-            ABDBomb* Same=X.Mode->ActiveBomb;
-            X.Place(P); X.Player->ThrowBomb();
-            X.Test->TestTrue(TEXT("Regular cannot be thrown from zone"),Same->IsBanana());
-            X.Test->TestEqual(TEXT("Same bomb instance"),Same,X.Mode->ActiveBomb.Get());
-            X.Test->TestEqual(TEXT("Same fuse"),Same->GetRemainingFuse(),Fuse);
-            X.ClearBomb();
-            X.Place(FVector(-400,840,66)); X.Player->DrawBomb();
-            X.Test->TestFalse(TEXT("Leaving restores regular bomb selection"),X.Mode->ActiveBomb->IsBanana());
-            X.ClearBomb();
-        },[](FFixture& X){return X.After(.1f);});
-    }
-    Step(TEXT("Uneaten banana near crate persists without an explosion"),[](FFixture& X)
-    {
-        X.Mode->Settings->BananaAttractionRange=0;
-        X.Player->DrawBomb(); ABDBomb* Bomb=X.Mode->ActiveBomb; Bomb->MakeBanana(); Bomb->Release(false);
-        X.Banana=Bomb;
-        Bomb->SetActorLocation(X.Mode->Crate->GetActorLocation()+FVector(130,0,0),false,nullptr,ETeleportType::TeleportPhysics);
-        Bomb->Collision->SetPhysicsLinearVelocity(FVector::ZeroVector);
-        Bomb->Collision->SetPhysicsAngularVelocityInRadians(FVector::ZeroVector);
-        Bomb->Explode();
-        X.Place(X.Player->GetSpawnPosition());
-    },[](FFixture& X)
-    {
-        if (!X.After(4.6f)) return false;
-        X.Test->TestTrue(TEXT("Unconsumed food survives fuse and explicit explode call"),X.Banana.IsValid());
-        X.Test->TestEqual(TEXT("Persistent banana retains active slot"),X.Mode->ActiveBomb.Get(),X.Banana.Get());
-        X.Test->TestTrue(TEXT("Crate unchanged beside banana"),FVector::Dist2D(X.CrateStart,X.Mode->Crate->GetActorLocation())<1);
-        X.Test->TestTrue(TEXT("No crate impulse"),X.Mode->Crate->Mesh->GetPhysicsLinearVelocity().Size2D()<1);
-        X.ClearBomb(); X.Mode->Settings->BananaAttractionRange=2400;
-        X.Place(FVector(270,600,66)); return true;
+        if(!X.After(1.f) || X.World->GetGameInstance<UBDAlphaSession>()->GetScreen()!=EBDAlphaScreen::Playing)return false;
+        X.Test->TestEqual(TEXT("Restart key starts corridor"),X.Tutorial()->GetScene(),EBDTutorialScene::ChargeCorridor);
+        X.Test->TestEqual(TEXT("Restart key stays at index zero"),X.Tutorial()->SceneIndex,0);
+        X.Test->TestEqual(TEXT("Restart key is playable"),X.Tutorial()->Phase,EBDTutorialPhase::Playing);
+        X.Test->TestNull(TEXT("Restart key clears the live bomb"),X.Mode->ActiveBomb.Get());
+        X.Test->TestEqual(TEXT("Restart key resets bombs"),X.Mode->BombsUsed,0);return true;
     });
-    Step(TEXT("Slide hits solid wall, stops early and restores control"),{},[](FFixture& X)
-    {
-        if (!X.After(.2f)) return false;
-        X.Aim(FVector(-500,0,0)); X.Player->StartSlide(800,850); X.Saved=X.Player->GetActorLocation(); return true;
-    });
-    Step(TEXT("Wall slide is finite"),{},[](FFixture& X)
-    {
-        if (X.Player->IsSliding()) return false;
-        X.Test->TestTrue(TEXT("Wall stops before five tiles"),FVector::Dist2D(X.Saved,X.Player->GetActorLocation())<400);
-        X.Test->TestTrue(TEXT("Movement restored"),X.Player->GetCharacterMovement()->MovementMode==MOVE_Walking);
-        X.Place(FVector(-200,420,66)); X.Aim(FVector(500,0,0)); return true;
-    });
-    Step(TEXT("Positioning peel only slides and allows walking away"),{},[](FFixture& X)
-    {
-        if (!X.After(1.5f) || X.Player->IsSliding()) return false;
-        // Walk north away from the peel; walking back left would intentionally
-        // cross the same peel again and restart its slide.
-        X.Player->MoveInRoom(FVector2D(0,-1));
-        if (!X.After(1.9f)) return false;
-        X.Test->TestTrue(TEXT("Positioning peel slid right"),X.Player->GetActorLocation().X>-400);
-        X.Test->TestTrue(TEXT("Movement works after positioning peel"),X.Player->GetVelocity().Size2D()>100);
-        X.Player->GetCharacterMovement()->StopMovementImmediately(); return true;
-    });
-    Step(TEXT("Enemy chase catches player but preserves crate"),[](FFixture& X)
-    {
-        X.Guard->Attract(X.Guard->GetActorLocation(),0);
-        X.Place(X.Guard->GetActorLocation()+FVector(240,0,0));
-        X.Saved=X.Mode->Crate->GetActorLocation();
-    },[](FFixture& X)
-    {
-        if (X.Mode->Captures==0 || X.Player->IsRecovering()) return false;
-        X.Test->TestTrue(TEXT("Capture respawned player"),FVector::Dist2D(X.Player->GetActorLocation(),X.Player->GetSpawnPosition())<10);
-        X.Test->TestTrue(TEXT("Capture keeps crate"),FVector::Dist(X.Saved,X.Mode->Crate->GetActorLocation())<1);
-        X.Test->TestFalse(TEXT("Recovery grace period"),X.Mode->CanCatchPlayer());
-        return true;
-    });
-    Step(TEXT("Ordinary Jungle bombs use the shared Chaos crate forces"),[](FFixture& X)
-    {
-        X.ClearBomb();
-        for (TActorIterator<ABDWildMan> It(X.World); It; ++It) It->Attract(X.Mode->Settings->ClearingCenter,250);
-        // Use a known safe firing position at the original upper corridor. This
-        // exercises an actual dropped bomb rather than a donor force formula.
-        X.Mode->Crate->Mesh->SetSimulatePhysics(true);
-        X.Mode->Crate->SetActorLocation(X.CrateStart,false,nullptr,ETeleportType::TeleportPhysics);
-        X.Mode->Crate->Mesh->SetPhysicsLinearVelocity(FVector::ZeroVector);
-        X.Mode->Crate->Mesh->SetPhysicsAngularVelocityInRadians(FVector::ZeroVector);
-        X.Saved=X.Mode->Crate->GetActorLocation();
-        X.LastShot=-1.f;
-        X.Place(X.Saved+FVector(270,0,0)); X.Aim(FVector(-500,0,0));
-        X.Player->DrawBomb();
-        X.Test->TestTrue(TEXT("Outside banana zone uses a normal bomb"),X.Mode->ActiveBomb && !X.Mode->ActiveBomb->IsBanana());
-        X.Player->DropBomb(); X.Place(X.Player->GetSpawnPosition());
-    },[](FFixture& X)
-    {
-        if (X.Mode->ActiveBomb) return false;
-        // Clearing the bomb slot happens during Explode(), before Chaos has
-        // integrated the impulse. Observe displacement after physical frames.
-        if (X.LastShot<0.f) { X.LastShot=X.World->GetTimeSeconds(); return false; }
-        if (X.World->GetTimeSeconds()-X.LastShot<.4f) return false;
-        X.Test->AddInfo(FString::Printf(TEXT("Crate after actual blast: before=%s after=%s velocity=%s"),
-            *X.Saved.ToString(),*X.Mode->Crate->GetActorLocation().ToString(),*X.Mode->Crate->Mesh->GetPhysicsLinearVelocity().ToString()));
-        X.Test->TestTrue(TEXT("Actual explosion displaces the current 120 cm crate"),FVector::Dist2D(X.Saved,X.Mode->Crate->GetActorLocation())>10.f);
-        return true;
-    });
-    Step(TEXT("Shared settled-delivery rule completes the imported Jungle"),[](FFixture& X)
-    {
-        // Goal fixture verifies integration, not a complete playthrough of the
-        // donor route, whose old analytic impulse solver does not match Chaos.
-        X.Mode->Crate->Mesh->SetSimulatePhysics(true);
-        FVector P=X.Mode->Goal->GetActorLocation();
-        P.Z=X.Mode->Crate->Mesh->Bounds.BoxExtent.Z+2.f;
-        X.Mode->Crate->SetActorRotation(FRotator::ZeroRotator,ETeleportType::TeleportPhysics);
-        X.Mode->Crate->SetActorLocation(P,false,nullptr,ETeleportType::TeleportPhysics);
-        X.Mode->Crate->Mesh->SetPhysicsLinearVelocity(FVector::ZeroVector);
-        X.Mode->Crate->Mesh->SetPhysicsAngularVelocityInRadians(FVector::ZeroVector);
-    },[](FFixture& X)
-    {
-        if (!X.Mode->bCompleted) return false;
-        X.Test->TestTrue(TEXT("Crate inside goal and settled"),X.Mode->Goal->ContainsSettledCrate(X.Mode->Crate));
-        X.Shot(TEXT("04-complete.png"));
-        return true;
-    });    ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());
-    return true;
+    ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBDJungleBananaRaceTest,"BlastDelivery.Jungle.BananaRaceAndPickup",
-    EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
-bool FBDJungleBananaRaceTest::RunTest(const FString& Parameters)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBDCompactJungleTest,"BlastDelivery.Redesign.Jungle",EAutomationTestFlags::EditorContext|EAutomationTestFlags::ProductFilter)
+bool FBDCompactJungleTest::RunTest(const FString& Parameters)
 {
-    using namespace BDJungleTests;
+    using namespace BDRedesignTests;
     ADD_LATENT_AUTOMATION_COMMAND(FEditorLoadMap(TEXT("/Game/Maps/JungleBananaTrap")));
     ADD_LATENT_AUTOMATION_COMMAND(FStartPIECommand(false));
-    auto F=MakeShared<FFixture>(); F->Test=this;
-    auto Step=[&](const TCHAR* Name,FAction Begin,FCondition Until,float Timeout=20.f)
-    { FAutomationTestFramework::Get().EnqueueLatentCommand(MakeShared<FStep>(F,Name,MoveTemp(Begin),MoveTemp(Until),Timeout)); };
-    Step(TEXT("Enter Jungle through the Alpha catalog"),[](FFixture& X)
-    { X.World->GetGameInstance<UBDAlphaSession>()->StartLevel(4); },[](FFixture& X)
+    auto F=MakeShared<FFixture>();F->Test=this;
+    auto Step=[&](const TCHAR* N,FAction B,FCondition U){FAutomationTestFramework::Get().EnqueueLatentCommand(MakeShared<FStep>(F,N,MoveTemp(B),MoveTemp(U)));};
+    Step(TEXT("Level selection loads Jungle"),[](FFixture& X){X.World->GetGameInstance<UBDAlphaSession>()->StartLevel(4);},[](FFixture& X)
+    {return X.After(1) && X.Jungle() && X.World->GetGameInstance<UBDAlphaSession>()->GetScreen()==EBDAlphaScreen::Playing;});
+    Step(TEXT("Sketch layout and distribution"),[](FFixture& X){X.World->GetGameViewport()->GetGameViewport()->SetFixedViewportSize(1280,800);},[](FFixture& X)
     {
-        return X.After(1.f) && X.World->GetGameInstance<UBDAlphaSession>()->GetScreen()==EBDAlphaScreen::Playing;
+        if(!X.After(1))return false;X.PC->SetActorTickEnabled(false);X.Test->TestEqual(TEXT("One keeper"),X.Count<ABDWildMan>(),1);X.Test->TestEqual(TEXT("Four trees"),X.Count<ABDBananaTree>(),4);
+        int32 Top=0,Bottom=0;for(TActorIterator<ABDBananaTree> It(X.World);It;++It)X.Test->TestEqual(TEXT("Only lower trees have fruit"),It->bHasBananas,It->GetActorLocation().Y>0);
+        for(TActorIterator<ABDBananaPeel> It(X.World);It;++It)It->GetActorLocation().Y<0?++Top:++Bottom;
+        X.Test->TestTrue(TEXT("More peels above"),Top>Bottom && Bottom>0);X.Test->TestTrue(TEXT("Banana package"),X.Mode->Crate->IsA<ABDBananaPackage>());
+        X.Test->TestFalse(TEXT("Door initially locked"),X.Jungle()->Passage->bOpen);X.Shot(TEXT("05-jungle-layout.png"));return true;
     });
-    Step(TEXT("Throw gate bait without distracting the upper wild man"),{},[](FFixture& X)
+    Step(TEXT("Unlured keeper walks around upper room"),[](FFixture& X)
+    {X.Saved=X.PatrolMin=X.PatrolMax=X.Keeper->GetActorLocation();X.PatrolDistance=0;},[](FFixture& X)
     {
-        if (!X.After(2.f)) return false;
-        X.PC->SetActorTickEnabled(false); X.World->GetGameInstance<UBDAlphaSession>()->SetSimpleControls(false);
-        X.Place(FVector(640,40,66)); X.Aim(FVector(-370,340,0));
-        X.Player->DrawBomb(); X.Banana=X.Mode->ActiveBomb; X.Player->ThrowBomb();
-        return true;
+        const FVector P=X.Keeper->GetActorLocation();X.PatrolDistance+=FVector::Dist2D(P,X.Saved);X.Saved=P;
+        X.PatrolMin=X.PatrolMin.ComponentMin(P);X.PatrolMax=X.PatrolMax.ComponentMax(P);
+        if(!X.After(12.f))return false;
+        X.Test->AddInfo(FString::Printf(TEXT("Patrol distance %.1f cm, span %s"),X.PatrolDistance,*(X.PatrolMax-X.PatrolMin).ToString()));
+        X.Test->TestTrue(TEXT("Keeper walks between destinations"),X.PatrolDistance>600.f);
+        X.Test->TestTrue(TEXT("Patrol covers both axes"),X.PatrolMax.X-X.PatrolMin.X>100 && X.PatrolMax.Y-X.PatrolMin.Y>80);
+        X.Test->TestFalse(TEXT("Patrol needs no food"),X.Keeper->IsDistracted());
+        X.Shot(TEXT("13-jungle-patrol.png"));X.Place(X.Tree->GetActorLocation()+FVector(-155,-80,93));return true;
     });
-    Step(TEXT("Hungry upper wild man wins the race for gate bait"),{},[](FFixture& X)
+    Step(TEXT("Bomb harvests tree"),{},[](FFixture& X)
     {
-        if (!X.Guard->IsEating()) return false;
-        X.Test->TestTrue(TEXT("Top wild man claims the bait"),X.Banana.IsValid() && X.Banana->GetConsumer()==X.Guard);
-        X.Test->TestFalse(TEXT("Top wild man has no gate key"),X.Mode->Passage->bOpen);
-        X.Test->TestNull(TEXT("Stolen food still frees slot immediately"),X.Mode->ActiveBomb.Get());
-        X.Test->TestFalse(TEXT("Claimed banana cannot be picked up twice"),X.Banana->PickUpBanana(X.Keeper));
-        return true;
+        if(!X.After(.3f))return false;X.Player->FacePoint(X.Tree->GetActorLocation());X.Player->DrawBomb();
+        if(!X.Test->TestNotNull(TEXT("Bomb drawn"),X.Mode->ActiveBomb.Get())){X.Failed=true;return true;}
+        X.Test->TestFalse(TEXT("Regular explosive by tree"),X.Mode->ActiveBomb->IsBanana());X.Player->DropBomb();X.Mode->ActiveBomb->Explode();X.Place(FVector(-720,390,93));return true;
     });
-    Step(TEXT("Keeper abandons already claimed food; capture preserves meal"),{},[](FFixture& X)
+    Step(TEXT("Fruit falls and leaves bomb slot free"),{},[](FFixture& X)
     {
-        if (!X.After(3.f)) return false;
-        X.Test->TestFalse(TEXT("No delayed gate opening after bait is stolen"),X.Mode->bPassageCleared);
-        X.Test->TestFalse(TEXT("Keeper cannot eat upper wild man's banana"),X.Keeper->IsEating());
-        X.Test->TestTrue(TEXT("Upper wild man has a long meal"),X.Guard->GetEatingRemaining()>15.f);
-        X.Mode->PlayerCaught();
-        X.Test->TestEqual(TEXT("Capture occurred"),X.Mode->Captures,1);
-        X.Test->TestTrue(TEXT("Capture keeps ongoing meal and carried food"),X.Guard->IsEating() && X.Banana.IsValid());
-        X.Mode->RestartTutorial();
-        X.Test->TestFalse(TEXT("Retry cleans carried banana outside active slot"),X.Banana.IsValid());
-        X.Test->TestFalse(TEXT("Retry resets eating state"),X.Guard->IsEating());
-        X.Test->TestFalse(TEXT("Retry does not unlock gate"),X.Mode->Passage->bOpen);
-        int32 Bombs=0; for (TActorIterator<ABDBomb> It(X.World); It; ++It) ++Bombs;
-        X.Test->TestEqual(TEXT("No orphaned food after retry"),Bombs,0);
-        return true;
+        for(TActorIterator<ABDBomb> It(X.World);It;++It)if(It->IsRestingBanana())X.Banana=*It;if(!X.Banana.IsValid())return false;
+        X.Test->TestTrue(TEXT("Tree harvested"),X.Tree->HasDroppedFruit());X.Test->TestNull(TEXT("Free bomb slot"),X.Mode->ActiveBomb.Get());X.Test->TestFalse(TEXT("Distant fruit cannot unlock"),X.Jungle()->Passage->bOpen);
+        X.Saved=X.Banana->GetActorLocation();X.Direction=(FVector(0,165,24)-X.Saved).GetSafeNormal2D();X.Place(X.Saved-X.Direction*68);X.Shot(TEXT("06-jungle-fruit.png"));return true;
     });
-    ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());
-    return true;
-}
-
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBDJungleRecoveryTest,"BlastDelivery.Jungle.RecoveryAndSpawnLimits",
-    EAutomationTestFlags::EditorContext | EAutomationTestFlags::ProductFilter)
-bool FBDJungleRecoveryTest::RunTest(const FString& Parameters)
-{
-    using namespace BDJungleTests;
-    ADD_LATENT_AUTOMATION_COMMAND(FEditorLoadMap(TEXT("/Game/Maps/JungleBananaTrap")));
-    ADD_LATENT_AUTOMATION_COMMAND(FStartPIECommand(false));
-    auto F=MakeShared<FFixture>(); F->Test=this;
-    auto Step=[&](const TCHAR* Name,FAction Begin,FCondition Until,float Timeout=20.f)
-    { FAutomationTestFramework::Get().EnqueueLatentCommand(MakeShared<FStep>(F,Name,MoveTemp(Begin),MoveTemp(Until),Timeout)); };
-    Step(TEXT("Enter Jungle through the Alpha catalog"),[](FFixture& X)
-    { X.World->GetGameInstance<UBDAlphaSession>()->StartLevel(4); },[](FFixture& X)
+    Step(TEXT("Player pushes banana to door"),{},[](FFixture& X)
     {
-        return X.After(1.f) && X.World->GetGameInstance<UBDAlphaSession>()->GetScreen()==EBDAlphaScreen::Playing;
+        if(!X.Banana.IsValid())return false;if(X.Banana->GetActorLocation().Y>205){X.Player->FacePoint(X.Player->GetActorLocation()+X.Direction);X.Player->MoveInRoom(FVector2D(X.Direction.X,X.Direction.Y)*.35f);return false;}
+        X.Player->MoveInRoom(FVector2D::ZeroVector);X.Test->TestTrue(TEXT("Banana pushed 200 cm"),FVector::Dist2D(X.Saved,X.Banana->GetActorLocation())>200);X.Place(FVector(-620,390,93));return true;
     });
-    Step(TEXT("Courier entrance blocks crate shortcut without blocking player"),{},[](FFixture& X)
+    Step(TEXT("Smell cue"),{},[](FFixture& X){if(!X.Keeper->IsSmelling() || !X.After(.2f))return false;X.Shot(TEXT("07-jungle-smell.png"));return true;});
+    Step(TEXT("Keeper unlocks and swings door"),{},[](FFixture& X)
+    {auto* D=Cast<ABDJungleDoor>(X.Jungle()->Passage);if(!D || !D->IsOpening() || D->GetOpeningProgress()<.55f)return false;X.Test->TestFalse(TEXT("Collision retained during opening"),D->bOpen);X.Test->TestTrue(TEXT("Keeper at door"),FVector::Dist2D(X.Keeper->GetActorLocation(),X.Jungle()->GetGateApproach())<90);X.Shot(TEXT("08-jungle-door.png"));return true;});
+    Step(TEXT("Keeper crosses doorway and eats"),{},[](FFixture& X)
     {
-        if (!X.After(2.f)) return false;
-        X.PC->SetActorTickEnabled(false); X.World->GetGameInstance<UBDAlphaSession>()->SetSimpleControls(false);
-        X.Test->TestFalse(TEXT("Courier fits trail entrance"),X.World->OverlapBlockingTestByChannel(FVector(-990,700,X.Player->GetCapsuleComponent()->GetScaledCapsuleHalfHeight()+2.f),FQuat::Identity,ECC_Pawn,FCollisionShape::MakeCapsule(X.Player->GetCapsuleComponent()->GetScaledCapsuleRadius(),X.Player->GetCapsuleComponent()->GetScaledCapsuleHalfHeight())));
-        X.Test->TestTrue(TEXT("Crate cannot bypass guarded route"),X.World->OverlapBlockingTestByChannel(FVector(-990,700,53),FQuat::Identity,ECC_PhysicsBody,FCollisionShape::MakeBox(X.Mode->Crate->Mesh->Bounds.BoxExtent)));
-        X.Mode->bPassageCleared=true; X.Mode->Passage->Open();
-        X.Mode->Settings->SpawnIntervalMin=.25f; X.Mode->Settings->SpawnIntervalMax=.25f;
-        X.Mode->Settings->SpawnPoints={X.Mode->Settings->ClearingCenter+FVector(0,0,66)};
-        X.Mode->Crate->Mesh->SetPhysicsLinearVelocity(FVector::ZeroVector);
-        X.Mode->Crate->SetActorLocation(FVector(270,730,53),false,nullptr,ETeleportType::TeleportPhysics);
-        return true;
+        if(!X.Keeper->IsEating() || X.Keeper->GetEatingRemaining()>X.Jungle()->Settings->EatingSeconds-.3f)return false;
+        X.Test->TestTrue(TEXT("Door remains open"),X.Jungle()->Passage->bOpen);X.Test->TestTrue(TEXT("Keeper in lower room"),X.Keeper->GetActorLocation().Y>30);
+        X.Test->TestTrue(TEXT("Food belongs to keeper"),X.Banana.IsValid() && X.Banana->GetConsumer()==X.Keeper);
+        // Three short straight segments connect the lower package, doorway and goal.
+        const FVector Route[]={{-330,180,63},{0,180,63},{0,-200,63},{705,-455,63}};
+        FCollisionQueryParams Query(SCENE_QUERY_STAT(JungleCargoRoute),false,X.Mode->Crate);
+        Query.AddIgnoredActor(X.Player);Query.AddIgnoredActor(X.Keeper);
+        for(int32 I=1;I<4;++I)
+        {
+            FHitResult Hit;
+            X.Test->TestFalse(TEXT("Open route fits the full package"),X.World->SweepSingleByChannel(Hit,Route[I-1],Route[I],FQuat::Identity,ECC_PhysicsBody,FCollisionShape::MakeBox(FVector(60)),Query));
+        }
+        X.Shot(TEXT("09-jungle-eating.png"));X.Place(X.Peel->GetActorLocation());X.Mark=X.World->GetTimeSeconds();return true;
     });
-    Step(TEXT("Progress at a safe corner creates a retry checkpoint"),{},[](FFixture& X)
+    Step(TEXT("One-second slip preserves peel"),{},[](FFixture& X)
     {
-        if (!X.After(3.f)) return false;
-        X.Test->TestEqual(TEXT("First crate checkpoint saved"),X.Mode->CheckpointIndex,1);
-        X.Saved=X.Mode->Crate->GetActorLocation();
-        X.Place(FVector(1000,900,66)); X.Mode->PlayerCaught();
-        X.Test->TestEqual(TEXT("Capture counted"),X.Mode->Captures,1);
-        X.Test->TestTrue(TEXT("Advanced crate progress kept after capture"),FVector::Dist(X.Saved,X.Mode->Crate->GetActorLocation())<1);
-        X.Mode->Crate->SetActorLocation(FVector(310,630,53),false,nullptr,ETeleportType::TeleportPhysics);
-        X.Mode->RestartTutorial();
-        const FVector Restored=X.Mode->Crate->GetActorLocation();
-        X.Test->AddInfo(FString::Printf(TEXT("Checkpoint recovery: settled=%s restored=%s"),*X.Saved.ToString(),*Restored.ToString()));
-        X.Test->TestTrue(TEXT("R restores saved corner, not level start"),FVector::Dist2D(X.Saved,Restored)<1 && FMath::Abs(X.Saved.Z-Restored.Z)<5);
-        X.Test->TestTrue(TEXT("Opened route persists on retry"),X.Mode->bPassageCleared && X.Mode->Passage->bOpen);
-        return true;
+        auto* P=Cast<ABDJungleCharacter>(X.Player);const float Age=X.World->GetTimeSeconds()-X.Mark;if(Age<.5f)return false;if(P->IsSliding()){if(Age<.6f)X.Shot(TEXT("10-jungle-slip.png"));return false;}
+        X.Test->TestTrue(TEXT("Recovery about one second"),Age>.85f && Age<1.35f);X.Test->TestFalse(TEXT("Peel remains"),X.Peel->IsConsumed());X.Test->TestTrue(TEXT("Walking restored"),P->GetCharacterMovement()->IsMovingOnGround());
+        X.Place(FVector(-620,390,93));X.Mode->Crate->Mesh->SetSimulatePhysics(true);X.Mode->Crate->SetActorLocation(X.Peel->GetActorLocation()+FVector(-120,0,61),false,nullptr,ETeleportType::TeleportPhysics);X.Mode->Crate->Mesh->SetPhysicsLinearVelocity(FVector(220,0,0));return true;
     });
-    Step(TEXT("Random spawner uses navigable predefined point and respects cap"),{},[](FFixture& X)
+    Step(TEXT("Box consumes peel and leaves skid"),{},[](FFixture& X)
+    {if(!X.Peel->IsConsumed())return false;X.Test->TestTrue(TEXT("Box slides forward"),X.Mode->Crate->Mesh->GetPhysicsLinearVelocity().X>400);X.Test->TestEqual(TEXT("Skid mark"),X.Count<ABDJungleSkidMark>(),1);return true;});
+    Step(TEXT("Skid remains after the box passes"),{},[](FFixture& X){if(!X.After(.3f))return false;X.Shot(TEXT("11-jungle-skid.png"));return true;});
+    Step(TEXT("Restart restores puzzle"),[](FFixture& X){X.Mode->RestartTutorial();},[](FFixture& X)
     {
-        if (X.Mode->CountWildMen()<3) return false;
-        X.Test->TestEqual(TEXT("Maximum three active wild men"),X.Mode->CountWildMen(),3);
-        for (TActorIterator<ABDWildMan> It(X.World); It; ++It)
-            X.Test->TestEqual(TEXT("Enemies cannot physically pin crate"),It->GetCapsuleComponent()->GetCollisionResponseToChannel(ECC_PhysicsBody),ECR_Ignore);
-        return true;
-    },40.f);
-    Step(TEXT("Repeated spawn attempts cannot exceed maximum"),{},[](FFixture& X)
-    {
-        if (!X.After(2.f)) return false;
-        X.Test->TestEqual(TEXT("Cap remains enforced"),X.Mode->CountWildMen(),3);
-        return true;
+        if(!X.After(.5f))return false;X.Test->TestFalse(TEXT("Door reset"),X.Jungle()->Passage->bOpen);X.Test->TestFalse(TEXT("Fruit restored"),X.Tree->HasDroppedFruit());X.Test->TestFalse(TEXT("Peel restored"),X.Peel->IsConsumed());X.Test->TestEqual(TEXT("Skids cleared"),X.Count<ABDJungleSkidMark>(),0);
+        X.Mode->Crate->Mesh->SetSimulatePhysics(false);X.Mode->Crate->SetActorLocation(X.Mode->Goal->GetActorLocation()+FVector(0,0,-39),false,nullptr,ETeleportType::TeleportPhysics);return true;
     });
-    ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());
-    return true;
+    Step(TEXT("Settled delivery completes Jungle"),{},[](FFixture& X){return X.Mode->bCompleted;});
+    ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());return true;
 }
 #endif

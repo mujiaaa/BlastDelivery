@@ -33,6 +33,10 @@ public:
     FVector GetSpawnPosition() const { return SpawnTransform.GetLocation(); }
     float GetSpawnFloorHeight() const { return SpawnFloorZ; }
     UPROPERTY(EditAnywhere, Category="Movement") float WalkSpeed = 520.f;
+protected:
+    USceneComponent* GetPresentationRoot() const { return VisualRoot; }
+    UStaticMeshComponent* GetLeftHand() const { return LeftHand; }
+    UStaticMeshComponent* GetRightHand() const { return RightHand; }
 private:
     UPROPERTY(Transient) TObjectPtr<USceneComponent> VisualRoot;
     UPROPERTY(Transient) TArray<TObjectPtr<UStaticMeshComponent>> BodyParts;

@@ -1,8 +1,10 @@
 #include "BDTutorialHUD.h"
 #include "BDAlphaSession.h"
 #include "BDBomb.h"
+#include "BDPlayerController.h"
 #include "CanvasItem.h"
 #include "Engine/Canvas.h"
+#include "Engine/Engine.h"
 #include "GlobalRenderResources.h"
 #include "Kismet/GameplayStatics.h"
 
@@ -92,16 +94,29 @@ void ABDTutorialHUD::Check(FVector2D P, float Size, FLinearColor Color)
     Line(P+FVector2D(-.12f,.34f)*Size,P+FVector2D(.56f,-.42f)*Size,Color,Size*.12f);
 }
 
-void ABDTutorialHUD::Instruction(EBDTutorialScene Scene, int32 Index, float Offset, float Flash)
+void ABDTutorialHUD::Instruction(EBDTutorialScene Scene, int32 Index, float Offset, float Flash, const FVector2D* WorldAnchor)
 {
-    Origin = FVector2D(Canvas->SizeX*OverlayAnchor.X-260*Scale+Offset,Canvas->SizeY*OverlayAnchor.Y);
+    Origin = WorldAnchor ? *WorldAnchor-FVector2D(260,56)*Scale : FVector2D(Canvas->SizeX*OverlayAnchor.X-260*Scale+Offset,Canvas->SizeY*OverlayAnchor.Y);
+    if (!WorldAnchor)
+    {
+        // Dark ink belongs over the light playable floor, including the right
+        // landing platform in the two gap lessons, rather than over the backdrop.
+        const auto* Tutorial = GetWorld()->GetAuthGameMode<ABDTutorialGameMode>();
+        auto* PC = Cast<ABDPlayerController>(GetOwningPlayerController());
+        const bool bGap = Scene==EBDTutorialScene::CrossGap || Scene==EBDTutorialScene::Deliver;
+        FVector2D FloorAnchor;
+        FVector StageOrigin = Tutorial ? Tutorial->GetSceneOrigin() : FVector::ZeroVector;
+        if (Tutorial && PC && Tutorial->Phase==EBDTutorialPhase::Sliding && Index>Tutorial->SceneIndex)
+            StageOrigin.X+=PC->GetViewWidth();
+        if (Tutorial && PC && PC->ProjectWorldLocationToScreen(StageOrigin+FVector(bGap?780.f:200.f,-240,10),FloorAnchor))
+            Origin=FloorAnchor-FVector2D(260,56)*Scale;
+    }
     const FLinearColor Success(.1f,1.f,.3f);
-    Ink = FMath::Lerp(FLinearColor(.92f,.96f,.95f),Success,Flash);
-    Accent = FMath::Lerp(FLinearColor(.14f,.85f,.94f),Success,Flash);
-    // Same linear RGB as /Game/Materials/M_Goal (create_tutorial.py palette).
-    Green = FMath::Lerp(FLinearColor(.06f,.65f,.27f),Success,Flash);
-    DrawRect(FLinearColor(.018f,.035f,.045f,.92f),Origin.X,Origin.Y,520*Scale,112*Scale);
-    const FLinearColor Ghost(Ink.R,Ink.G,Ink.B,.28f);
+    Ink = FMath::Lerp(FLinearColor(.025f,.045f,.05f),Success,Flash);
+    Accent = FMath::Lerp(FLinearColor(.035f,.18f,.20f),Success,Flash);
+    // Dark green remains readable directly over the bright delivery floor.
+    Green = FMath::Lerp(FLinearColor(.025f,.18f,.07f),Success,Flash);
+    const FLinearColor Ghost(Ink.R,Ink.G,Ink.B,.48f);
     const auto* Mode = GetWorld()->GetAuthGameMode<ABDTutorialGameMode>();
     switch (Scene)
     {
@@ -180,9 +195,64 @@ void ABDTutorialHUD::Instruction(EBDTutorialScene Scene, int32 Index, float Offs
         Check(FVector2D(391,58),48,Green);
         break;
     }
-    const int32 Count = Mode ? Mode->SceneOrder.Num() : 5;
+    const int32 Count = WorldAnchor ? 0 : Mode ? Mode->SceneOrder.Num() : 5;
     for (int32 I=0; I<Count; ++I)
         Circle(FVector2D(260+(I-(Count-1)*.5f)*13,105),2.5f,I<=Index ? Accent : Ghost,true);
+}
+
+void ABDTutorialHUD::CorridorInstructions(const ABDTutorialGameMode* Mode)
+{
+    auto* PC = Cast<ABDPlayerController>(GetOwningPlayerController());
+    if (!PC) return;
+    // Project immutable world anchors, not a screen overlay that follows the courier.
+    Scale = Canvas->SizeX/PC->GetViewWidth()*1.1f;
+    Ink = FLinearColor(.025f,.045f,.05f);
+    Accent = FLinearColor(.035f,.18f,.20f);
+    Green = FLinearColor(.025f,.18f,.07f);
+    FVector2D P;
+    auto Anchor = [&](int32 I)
+    {
+        if (!PC->ProjectWorldLocationToScreen(Mode->GetCorridorDoodlePosition(I),P)) return false;
+        Origin = P-FVector2D(260,56)*Scale;
+        return P.X>-300*Scale && P.X<Canvas->SizeX+300*Scale;
+    };
+    if (Anchor(0))
+    {
+        // Only the four keys, centred on their world anchor at twice the old size.
+        const FVector2D Keys[] = {{232,-8},{166,58},{232,58},{298,58}};
+        const TCHAR* Labels[] = {TEXT("W"),TEXT("A"),TEXT("S"),TEXT("D")};
+        for (int32 I=0;I<4;++I)
+        {
+            const FVector2D K = Keys[I];
+            Line(K,K+FVector2D(56,1),Ink,3); Line(K+FVector2D(56,1),K+FVector2D(57,56),Ink,3);
+            Line(K+FVector2D(57,56),K+FVector2D(0,57),Ink,3); Line(K+FVector2D(0,57),K,Ink,3);
+            DrawText(Labels[I],Ink,Origin.X+(K.X+12)*Scale,Origin.Y+(K.Y+4)*Scale,GEngine->GetMediumFont(),Scale*2.f);
+        }
+    }
+    if (Mode->IsChargeDoodleVisible() && Anchor(1))
+    {
+        const float Cycle = FMath::Fmod(Mode->GetPhaseTime(),5.f);
+        // Two synchronized demonstrations: short hold / short arc and long hold /
+        // long arc. The left button fills while held and clears on release. No words.
+        for (int32 Row=0;Row<2;++Row)
+        {
+            const float Y = 40+Row*78.f, Hold = Row==0 ? .45f : 1.8f;
+            const FLinearColor SavedAccent = Accent;
+            Accent = Cycle<Hold ? SavedAccent : FLinearColor(Ink.R,Ink.G,Ink.B,.15f);
+            Mouse(FVector2D(52,Y+6),false);
+            Accent = SavedAccent;
+            const float Length = Row==0 ? 42.f : 150.f;
+            Line(FVector2D(88,Y+25),FVector2D(88+Length,Y+25),FLinearColor(.3f,.4f,.4f),6);
+            Line(FVector2D(88,Y+25),FVector2D(88+Length*FMath::Clamp(Cycle/Hold,0.f,1.f),Y+25),Accent,6);
+            const FVector2D A(260,Y+15), B(Row==0?295:365,Y-42), C(Row==0?334:480,Y+15);
+            Arrow(A,B,C,Ink);
+            const float T = FMath::Clamp((Cycle-Hold)/.9f,0.f,1.f);
+            Bomb((1-T)*(1-T)*A+2*(1-T)*T*B+T*T*C,9,Accent);
+            Line(C+FVector2D(-12,13),C+FVector2D(12,13),Ink,2);
+        }
+    }
+    if (Mode->IsGoalDoodleVisible() && Anchor(2))
+        Instruction(EBDTutorialScene::Deliver,0,0,0,&P);
 }
 
 void ABDTutorialHUD::DrawHUD()
@@ -199,17 +269,18 @@ void ABDTutorialHUD::DrawHUD()
     const float Offset = -Slide*Canvas->SizeX;
     const bool bFeedback = Mode->Phase == EBDTutorialPhase::Success || Mode->Phase == EBDTutorialPhase::Finished;
     const float Flash = Mode->Phase == EBDTutorialPhase::Success ? FMath::Clamp(1.f-Mode->GetPhaseTime()/.4f,0.f,1.f) : 0.f;
-    Instruction(Mode->GetScene(),Mode->SceneIndex,Offset,Flash);
+    if (Mode->GetScene() == EBDTutorialScene::ChargeCorridor) CorridorInstructions(Mode);
+    else Instruction(Mode->GetScene(),Mode->SceneIndex,Offset,Flash);
     if (Mode->Phase == EBDTutorialPhase::Sliding)
         Instruction(Mode->GetNextScene(),Mode->SceneIndex+1,(1.f-Slide)*Canvas->SizeX,0.f);
     if (bFeedback)
     {
+        Scale = FMath::Min(Canvas->SizeX/580.f,Canvas->SizeY/800.f)*IconScale;
         Origin = FVector2D(Canvas->SizeX*CheckAnchor.X,Canvas->SizeY*CheckAnchor.Y);
         const float T = FMath::Clamp(Mode->GetPhaseTime()/.2f,0.f,1.f);
         const float U = T-1.f;
         const float Pop = Mode->Phase == EBDTutorialPhase::Finished ? 1.f : 1.f+2.70158f*U*U*U+1.70158f*U*U;
         const float Size = CheckSize*Pop;
-        Circle(FVector2D::ZeroVector,Size*.75f,FLinearColor(.015f,.07f,.035f,.86f),true);
         Check(FVector2D::ZeroVector,Size,FLinearColor(.1f,1.f,.3f));
     }
     if ((Mode->Phase == EBDTutorialPhase::Playing || Mode->Phase == EBDTutorialPhase::Success) && IsValid(Mode->ActiveBomb))

@@ -32,5 +32,6 @@ private:
     void Box(FVector2D P, float Size, FLinearColor Color);
     void Burst(FVector2D P, float Radius, FLinearColor Color);
     void Check(FVector2D P, float Size, FLinearColor Color);
-    void Instruction(EBDTutorialScene Scene, int32 Index, float Offset, float Flash);
+    void Instruction(EBDTutorialScene Scene, int32 Index, float Offset, float Flash, const FVector2D* WorldAnchor = nullptr);
+    void CorridorInstructions(const ABDTutorialGameMode* Mode);
 };

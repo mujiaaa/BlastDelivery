@@ -431,6 +431,19 @@ bool ABDBomb::IsRestingBanana() const
     FHitResult Hit; FCollisionQueryParams Q(SCENE_QUERY_STAT(BananaSupport),false,this);
     return GetWorld()->LineTraceSingleByChannel(Hit,GetActorLocation(),GetActorLocation()-FVector(0,0,GetWorldRadius()+10.f),ECC_Visibility,Q) && Hit.ImpactNormal.Z>.4f;
 }
+void ABDBomb::DropAsBananaFood()
+{
+    // Tree fruit shares the existing pushable Chaos body and eating lifecycle,
+    // but never claims a player's active bomb slot or starts an explosive fuse.
+    MakeBanana();
+    Tags.AddUnique(TEXT("TreeBanana"));
+    Collision->SetSphereRadius(24.f);
+    Collision->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+    Collision->SetSimulatePhysics(true);
+    Collision->SetMassOverrideInKg(NAME_None,2.f);
+    Collision->SetLinearDamping(2.f);
+    Collision->SetPhysicsLinearVelocity(FVector(0,0,-40));
+}
 bool ABDBomb::PickUpBanana(ABDCharacter* Eater)
 {
     if (!IsValid(Eater) || !IsRestingBanana()) return false;

@@ -8,7 +8,7 @@ class AStaticMeshActor;
 class USoundWaveProcedural;
 
 UENUM(BlueprintType)
-enum class EBDTutorialScene : uint8 { Throw, MoveBox, PutDown, CrossGap, Deliver };
+enum class EBDTutorialScene : uint8 { Throw, MoveBox, PutDown, CrossGap, Deliver, ChargeCorridor };
 
 UENUM(BlueprintType)
 enum class EBDTutorialPhase : uint8 { Playing, Success, Sliding, Finished };
@@ -60,7 +60,16 @@ public:
     float GetSlideAlpha() const;
     FVector GetSceneOrigin() const { return Current.Origin; }
     AActor* GetLandingGround() const;
+    bool IsChargeDoodleVisible() const { return bChargeDoodleVisible; }
+    bool IsGoalDoodleVisible() const { return bGoalDoodleVisible; }
+    FVector GetCorridorDoodlePosition(int32 Index) const;
+    float GetCorridorEnd() const { return CorridorEnd; }
 private:
+    bool bChargeDoodleVisible = false;
+    bool bGoalDoodleVisible = false;
+    float CorridorBoxX = 900.f;
+    float CorridorEnd = 2400.f;
+    void UpdateCorridorView();
     UPROPERTY() FBDTutorialStage Current;
     UPROPERTY() FBDTutorialStage Incoming;
     UPROPERTY() TObjectPtr<USoundWaveProcedural> SuccessChime;

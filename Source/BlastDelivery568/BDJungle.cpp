@@ -1,4 +1,5 @@
 #include "BDJungle.h"
+#include "BDJungleProps.h"
 #include "BDBomb.h"
 #include "BDCrate.h"
 #include "BDPlayerController.h"
@@ -8,6 +9,7 @@
 #include "BDAlphaLook.h"
 #include "AIController.h"
 #include "NavigationSystem.h"
+#include "Navigation/PathFollowingComponent.h"
 #include "NavMesh/NavMeshBoundsVolume.h"
 #include "Components/BoxComponent.h"
 #include "Components/CapsuleComponent.h"
@@ -29,7 +31,7 @@ bool JungleIsPlaying(const UWorld* World)
 ABDJungleSettings::ABDJungleSettings()
 {
     RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("Settings"));
-    SpawnPoints = { FVector(-400,-700,66), FVector(950,730,66), FVector(1020,-750,66) };
+    SpawnPoints.Empty(); // This compact puzzle has exactly one resident keeper.
 }
 void ABDJungleSettings::BuildNavigation()
 {
@@ -54,6 +56,7 @@ bool ABDJungleCharacter::StartSlide(float Distance, float Speed)
     SlideDirection = GetActorForwardVector().GetSafeNormal2D();
     SlideRemaining = Distance;
     SlideSpeed = FMath::Max(1.f, Speed);
+    SlipTime = 1.f;
     Super::MoveInRoom(FVector2D::ZeroVector);
     ConsumeMovementInputVector();
     GetCharacterMovement()->StopMovementImmediately();
@@ -65,6 +68,9 @@ void ABDJungleCharacter::EndSlide()
 {
     if (!IsSliding()) return;
     SlideRemaining = 0.f;
+    SlipTime = 0.f;
+    GetPresentationRoot()->SetRelativeRotation(FRotator::ZeroRotator);
+    GetPresentationRoot()->SetRelativeLocation(FVector::ZeroVector);
     Super::MoveInRoom(FVector2D::ZeroVector);
     ConsumeMovementInputVector();
     GetCharacterMovement()->StopMovementImmediately();
@@ -78,11 +84,19 @@ void ABDJungleCharacter::Tick(float DeltaSeconds)
     if (!IsSliding()) return;
     if (auto* Mode = GetWorld()->GetAuthGameMode<ABDGameMode>(); !JungleIsPlaying(GetWorld()) || (Mode && !Mode->IsGameplayInputAllowed()))
     { EndSlide(); return; }
-    const float Step = FMath::Min(SlideRemaining, SlideSpeed * DeltaSeconds);
-    FHitResult Hit;
-    SetActorLocation(GetActorLocation() + SlideDirection * Step, true, &Hit);
-    if (Hit.bBlockingHit || SlideRemaining <= Step + KINDA_SMALL_NUMBER) EndSlide();
-    else SlideRemaining -= Step;
+    SlipTime = FMath::Max(.0001f,SlipTime-DeltaSeconds);
+    const float Age = 1.f-SlipTime;
+    if (Age<.45f && SlideRemaining>0)
+    {
+        const float Step = FMath::Min(SlideRemaining,SlideSpeed*DeltaSeconds);
+        FHitResult Hit;
+        SetActorLocation(GetActorLocation()+SlideDirection*Step,true,&Hit);
+        SlideRemaining = Hit.bBlockingHit ? 0.f : FMath::Max(0.f,SlideRemaining-Step);
+    }
+    const float Lean = Age<.2f ? Age/.2f : Age<.55f ? 1.f : (1.f-Age)/.45f;
+    GetPresentationRoot()->SetWorldRotation((GetActorQuat()*FRotator(-78.f*Lean,0,0).Quaternion()));
+    GetPresentationRoot()->SetRelativeLocation(FVector(0,0,-34.f*Lean));
+    if (SlipTime<=.0001f) EndSlide();
 }
 
 void ABDJungleCharacter::MoveInRoom(const FVector2D& Input)
@@ -132,7 +146,25 @@ void ABDBananaPeel::Tick(float DeltaSeconds)
     Super::Tick(DeltaSeconds);
     auto* Player = Cast<ABDJungleCharacter>(UGameplayStatics::GetPlayerPawn(this,0));
     auto* Mode = GetWorld()->GetAuthGameMode<ABDJungleGameMode>();
-    if (!Player || !Mode || !Mode->Settings || !Mode->IsGameplayInputAllowed() || !JungleIsPlaying(GetWorld())) return;
+    if (bConsumed || !Player || !Mode || !Mode->Settings || !Mode->IsGameplayInputAllowed() || !JungleIsPlaying(GetWorld())) return;
+    if (ABDCrate* Box = Mode->Crate)
+    {
+        const FVector Local = GetActorTransform().InverseTransformPosition(Box->GetActorLocation());
+        const FVector Velocity = Box->Mesh->GetPhysicsLinearVelocity();
+        const FVector Extent = Box->Mesh->Bounds.BoxExtent;
+        if (Velocity.Size2D()>12.f && FMath::Abs(Local.X)<TriggerExtent.X+Extent.X
+            && FMath::Abs(Local.Y)<TriggerExtent.Y+Extent.Y && FMath::Abs(Local.Z-Extent.Z)<18.f)
+        {
+            const FVector Direction = Velocity.GetSafeNormal2D();
+            Box->Mesh->SetSimulatePhysics(true); Box->Mesh->WakeAllRigidBodies();
+            const float Speed = FMath::Max(600.f,Velocity.Size2D()+330.f);
+            Box->Mesh->SetPhysicsLinearVelocity(Direction*Speed+FVector(0,0,Velocity.Z));
+            bConsumed = true;
+            for (auto& Part:Pieces) Part->SetVisibility(false);
+            GetWorld()->SpawnActor<ABDJungleSkidMark>(GetActorLocation(),Direction.Rotation());
+            return;
+        }
+    }
     // Use the feet, not the old donor capsule's 66 cm centre. The Alpha console
     // can scale the player from 50 to 200 percent without disabling the peels.
     const FVector Feet = Player->GetActorLocation()-FVector(0,0,Player->GetCapsuleComponent()->GetScaledCapsuleHalfHeight());
@@ -143,10 +175,15 @@ void ABDBananaPeel::Tick(float DeltaSeconds)
     if (bInside)
     {
         if (!bOccupied && !Player->IsSliding())
-            bOccupied = Player->StartSlide(Mode->Settings->TileSize * Mode->Settings->SlideTiles, Mode->Settings->SlideSpeed);
+            bOccupied = Player->StartSlide(130.f,280.f);
         else if (Player->IsSliding()) bOccupied = true;
     }
     else if (!Player->IsSliding()) bOccupied = false;
+}
+void ABDBananaPeel::ResetPeel()
+{
+    bConsumed=bOccupied=false;
+    for (auto& Part:Pieces) Part->SetVisibility(true);
 }
 
 ABDBananaZone::ABDBananaZone()
@@ -208,6 +245,22 @@ ABDWildMan::ABDWildMan()
         Part->SetRelativeRotation(FRotator(I<9?24:0,I*45,0));
         Hair.Add(Part);
     }
+    for (int32 I=0;I<15;++I)
+    {
+        auto* Part = CreateDefaultSubobject<UStaticMeshComponent>(*FString::Printf(TEXT("Key%d"),I));
+        Part->SetupAttachment(GetPresentationRoot()); BDVisuals::Shape(Part,I<12?TEXT("Sphere"):TEXT("Cube"));
+        const float A = I*2*PI/12.f;
+        Part->SetRelativeLocation(I<12 ? FVector(53,FMath::Cos(A)*12,12+FMath::Sin(A)*12) :
+            I==12 ? FVector(53,0,-16) : FVector(53,7,-22-(I-13)*10));
+        Part->SetRelativeScale3D(I<12 ? FVector(.065) : I==12 ? FVector(.07,.07,.34) : FVector(.07,.20,.07));
+        KeyParts.Add(Part);
+    }
+    for (int32 I=0;I<3;++I)
+    {
+        auto* Part = CreateDefaultSubobject<UStaticMeshComponent>(*FString::Printf(TEXT("Scent%d"),I));
+        Part->SetupAttachment(GetPresentationRoot()); BDVisuals::Shape(Part,TEXT("Sphere"));
+        Part->SetRelativeScale3D(FVector(.08,.08,.36)); Part->SetVisibility(false); Scent.Add(Part);
+    }
 }
 void ABDWildMan::BeginPlay()
 {
@@ -221,6 +274,8 @@ void ABDWildMan::BeginPlay()
     for (auto* Part : Parts)
         if (Part->GetName().Contains(TEXT("Body")) || Part->GetName().Contains(TEXT("Foot")))
             BDVisuals::Material(Part,TEXT("JungleLeaf"));
+    for (auto& Part:KeyParts) { BDVisuals::Material(Part,TEXT("JungleBanana")); Part->SetVisibility(bGateOpener); }
+    for (auto& Part:Scent) BDVisuals::Material(Part,TEXT("JungleBanana"));
 }
 void ABDWildMan::EndPlay(const EEndPlayReason::Type Reason)
 {
@@ -253,9 +308,20 @@ void ABDWildMan::AttractBanana(ABDBomb* Banana)
 {
     if (IsEating() || !IsValid(Banana) || !Banana->IsRestingBanana() || Food.Get()==Banana) return;
     Food = Banana;
+    ScentTime = .9f;
     EatingStarted = -1.f;
     NextDecision = 0.f;
     bChasing = false;
+}
+void ABDWildMan::ResetPuzzle()
+{
+    if (Food.IsValid() && Food->GetConsumer()==this) Food->Destroy();
+    Food.Reset(); EatingStarted=-1.f; DistractedUntil=0.f; ScentTime=0.f;
+    bChasing=false; NextDecision=0.f;
+    bHasPatrolTarget=false; PatrolWaitUntil=0.f;
+    if (auto* AI=Cast<AAIController>(GetController())) AI->StopMovement();
+    GetCharacterMovement()->StopMovementImmediately();
+    SetActorLocation(Home,false,nullptr,ETeleportType::TeleportPhysics);
 }
 void ABDWildMan::ReturnHome()
 {
@@ -266,7 +332,34 @@ void ABDWildMan::ReturnHome()
     EatingStarted = -1.f;
     bChasing = false;
     DistractedUntil = 0.f;
+    bHasPatrolTarget=false;
     if (auto* AI = Cast<AAIController>(GetController())) AI->MoveToLocation(Home,40.f);
+}
+void ABDWildMan::Patrol(AAIController* AI, float Now)
+{
+    GetCharacterMovement()->MaxWalkSpeed = PatrolSpeed;
+    if (bHasPatrolTarget)
+    {
+        if (FVector::Dist2D(GetActorLocation(),PatrolTarget)>30.f && AI->GetMoveStatus()!=EPathFollowingStatus::Idle) return;
+        bHasPatrolTarget=false;
+        AI->StopMovement();
+        PatrolWaitUntil=Now+FMath::FRandRange(.35f,.9f);
+    }
+    if (Now<PatrolWaitUntil) return;
+    auto* Nav=FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld());
+    if (!Nav) { PatrolWaitUntil=Now+.5f; return; }
+    // Keep a destination until arrival. Repeated tiny MoveTo requests used to
+    // fall inside the acceptance radius, so the keeper appeared stationary.
+    for (int32 Try=0;Try<12;++Try)
+    {
+        FNavLocation Point;
+        if (!Nav->GetRandomReachablePointInRadius(Home,PatrolRadius,Point)) continue;
+        if (FVector::Dist2D(GetActorLocation(),Point.Location)<FMath::Min(180.f,PatrolRadius*.6f)) continue;
+        if (bGateOpener && Point.Location.Y>-130.f) continue;
+        if (AI->MoveToLocation(Point.Location,20.f,false,true,false,true,nullptr,false)==EPathFollowingRequestResult::RequestSuccessful)
+        { PatrolTarget=Point.Location; bHasPatrolTarget=true; return; }
+    }
+    PatrolWaitUntil=Now+.5f;
 }
 void ABDWildMan::Tick(float DeltaSeconds)
 {
@@ -277,6 +370,31 @@ void ABDWildMan::Tick(float DeltaSeconds)
     if (!Mode || !Mode->Settings || !Player || !AI) return;
     if (!Mode->IsGameplayInputAllowed() || !JungleIsPlaying(GetWorld())) { AI->StopMovement(); return; }
     const float Now = GetWorld()->GetTimeSeconds();
+    if (GetVelocity().Size2D()>5.f)
+        SetActorRotation(FMath::RInterpTo(GetActorRotation(),GetVelocity().GetSafeNormal2D().Rotation(),DeltaSeconds,7.f));
+    const auto* Door = Cast<ABDJungleDoor>(Mode->Passage);
+    const bool bOpening = Door && Door->IsOpening() && bGateOpener;
+    for (int32 I=0;I<Scent.Num();++I)
+    {
+        Scent[I]->SetVisibility(ScentTime>0.f);
+        Scent[I]->SetRelativeLocation(FVector(90+I*18,10*FMath::Sin(Now*7+I),110+I*8+FMath::Sin(Now*6+I)*6));
+    }
+    if (ScentTime>0.f)
+    {
+        ScentTime=FMath::Max(0.f,ScentTime-DeltaSeconds);
+        if (Food.IsValid()) SetActorRotation((Food->GetActorLocation()-GetActorLocation()).GetSafeNormal2D().Rotation());
+        GetPresentationRoot()->AddLocalRotation(FRotator(FMath::Sin(Now*12)*4,0,0));
+        AI->StopMovement(); return;
+    }
+    if (bOpening || IsEating())
+    {
+        const float Lift = bOpening ? 15.f : 38.f+FMath::Sin(Now*9)*6;
+        GetLeftHand()->SetRelativeLocation(FVector(53,-25,Lift));
+        GetRightHand()->SetRelativeLocation(FVector(53,25,Lift));
+        GetPresentationRoot()->AddLocalRotation(FRotator(bOpening ? 13.f : FMath::Sin(Now*9)*5.f,0,0));
+        if (IsEating() && Food.IsValid()) Food->SetActorScale3D(FVector(.4f+.6f*GetEatingRemaining()/Mode->Settings->EatingSeconds));
+        if (bOpening) { AI->StopMovement(); return; }
+    }
     if (Now < NextDecision) return;
     NextDecision = Now+.2f;
     if (IsEating())
@@ -288,7 +406,7 @@ void ABDWildMan::Tick(float DeltaSeconds)
         {
             UE_LOG(LogTemp,Display,TEXT("JUNGLE MEAL FINISHED: keeper=%d"),bGateOpener);
             Food->Destroy();
-            Attract(Lure,Mode->Settings->DistractionSeconds);
+            Attract(Lure,0.f);
         }
         return;
     }
@@ -330,14 +448,15 @@ void ABDWildMan::Tick(float DeltaSeconds)
     if (bChasing && Distance<CatchRange && FMath::Abs(Player->GetActorLocation().Z-GetActorLocation().Z)<
         FMath::Max(Player->GetCapsuleComponent()->GetScaledCapsuleHalfHeight(),GetCapsuleComponent()->GetScaledCapsuleHalfHeight()))
     { Mode->PlayerCaught(); return; }
+    if (!bLured && !bChasing && !bPassageGuard) { Patrol(AI,Now); return; }
+    bHasPatrolTarget=false;
     FVector Target = Home;
     if (bLured) Target = Lure;
     else if (bChasing) Target = Player->GetActorLocation();
-    else if (!bPassageGuard) Target += FVector(FMath::Sin(Now*.35f)*PatrolRadius,0,0);
     bool bApproachingGate = Mode->WantsGateAccess(this,Food.Get());
     if (bApproachingGate)
     {
-        // The closed gate has no path through it. Approach its reachable south
+        // The closed gate has no path through it. Approach its reachable upper
         // side first; opening updates the navmesh before pursuing the actual food.
         Target = Mode->GetGateApproach();
         if (Mode->TryOpenGate(this,Food.Get())) { Target = Lure; bApproachingGate = false; }
@@ -347,7 +466,6 @@ void ABDWildMan::Tick(float DeltaSeconds)
     // Gate interaction measures centre distance, so do not add capsule radius
     // to its arrival tolerance (also remains valid after console size changes).
     AI->MoveToLocation(Target,bApproachingGate ? 20.f : 35.f,!bApproachingGate,true,false,true,nullptr,false);
-    if (GetVelocity().Size2D()>5) SetActorRotation(GetVelocity().GetSafeNormal2D().Rotation());
     if (GetActorLocation().Z < -300) SetActorLocation(Home,false,nullptr,ETeleportType::TeleportPhysics);
 }
 
@@ -365,10 +483,10 @@ void ABDJungleGameMode::BeginPlay()
     for (TActorIterator<ABDGate> It(GetWorld()); It; ++It)
         if (It->ActorHasTag(TEXT("JunglePassage"))) { Passage=*It; break; }
     if (Crate) CrateCheckpoint = Crate->GetActorTransform();
-    Checkpoints = { FVector(-400,840,53), FVector(270,730,53), FVector(270,-260,53), FVector(600,-260,53), FVector(600,-730,53) };
+    Checkpoints.Empty();
     GraceUntil = GetWorld()->GetTimeSeconds()+4.f;
     NextSpawn = GetWorld()->GetTimeSeconds()+Settings->SpawnIntervalMin;
-    StatusMessage = TEXT("Use the left peels to reach Zone A. Feed the upper wild man, then lure the lower-right gatekeeper.");
+    StatusMessage = TEXT("Bomb a fruit tree. Push a banana to the golden lock, then deliver the package.");
 }
 ABDBananaZone* ABDJungleGameMode::ZoneAt(const FVector& Point) const
 {
@@ -377,44 +495,50 @@ ABDBananaZone* ABDJungleGameMode::ZoneAt(const FVector& Point) const
 }
 void ABDJungleGameMode::PrepareBomb(ABDBomb* Bomb, ABDCharacter* Holder)
 {
-    // The migrated bomb uses the shared Chaos body and continuous collision.
-    if (Bomb && Holder && ZoneAt(Holder->GetActorLocation())) Bomb->MakeBanana();
+    // Fruit comes from the trees. The player's charged bombs remain explosives.
 }
 void ABDJungleGameMode::ResolveBombExplosion(const FVector& Position, ABDCharacter* Holder, ABDBomb* Bomb)
 {
-    if (Bomb && !Bomb->IsBanana()) Super::ResolveBombExplosion(Position,Holder,Bomb);
+    if (!Bomb || Bomb->IsBanana()) return;
+    Super::ResolveBombExplosion(Position,Holder,Bomb);
+    const float Radius = Bomb->GetExplosionProfile().BlastRadius*100.f;
+    for (TActorIterator<ABDBananaTree> It(GetWorld()); It; ++It)
+    {
+        // Occlusion prevents a blast across the divider from harvesting a tree.
+        FHitResult Hit;
+        FCollisionQueryParams Sight(SCENE_QUERY_STAT(TreeBlast),false,Bomb);
+        Sight.AddIgnoredActor(*It);
+        if (Holder) Sight.AddIgnoredActor(Holder);
+        if (FVector::Dist2D(Position,It->GetActorLocation())<=Radius &&
+            !GetWorld()->LineTraceSingleByChannel(Hit,Position,It->GetActorLocation()+FVector(0,0,100),ECC_Visibility,Sight)) It->HitByBomb();
+    }
 }
 void ABDJungleGameMode::OnBananaPickedUp(ABDWildMan* Eater)
 {
     UE_LOG(LogTemp,Display,TEXT("JUNGLE BANANA PICKUP: keeper=%d position=%s"),Eater->bGateOpener,*Eater->GetActorLocation().ToString());
-    if (bPassageCleared) return;
-    if (Eater->bPassageGuard)
-        StatusMessage = TEXT("Upper wild man is eating! From Zone B, throw the next banana just ABOVE the brown gate.");
-    else if (Eater->bGateOpener)
-        StatusMessage = TEXT("Gatekeeper is eating. Next time, put the banana on the far side, just ABOVE the brown gate.");
+    StatusMessage = TEXT("The keeper is eating. Deliver the banana package through the open doorway.");
 }
 bool ABDJungleGameMode::WantsGateAccess(const ABDWildMan* Wild, const ABDBomb* Banana) const
 {
     if (bCompleted || bPassageCleared || !Passage || Passage->bOpen || !Settings || !Wild ||
         !Wild->bGateOpener || Wild->IsEating() || !IsValid(Banana) || !Banana->IsRestingBanana()) return false;
     const FVector Local = Passage->GetActorTransform().InverseTransformPosition(Banana->GetActorLocation());
-    return Local.Y < -Passage->Size.Y*.5f-20.f && FMath::Abs(Local.X)<=Passage->Size.X*.5f &&
+    return Local.Y > Passage->Size.Y*.5f+20.f && FMath::Abs(Local.X)<=Passage->Size.X*.5f &&
         Local.Size2D()<=Settings->GateLureRange && FMath::Abs(Local.Z)<120.f;
 }
 FVector ABDJungleGameMode::GetGateApproach() const
 {
-    return Passage ? Passage->GetActorTransform().TransformPosition(FVector(0,Passage->Size.Y*.5f+80.f,66.f)) : FVector::ZeroVector;
+    return Passage ? Passage->GetActorTransform().TransformPosition(FVector(0,-Passage->Size.Y*.5f-85.f,93.f)) : FVector::ZeroVector;
 }
 bool ABDJungleGameMode::TryOpenGate(ABDWildMan* Wild, ABDBomb* Banana)
 {
     if (!WantsGateAccess(Wild,Banana) || FVector::Dist2D(Wild->GetActorLocation(),GetGateApproach())>75.f) return false;
     const FVector Local = Passage->GetActorTransform().InverseTransformPosition(Wild->GetActorLocation());
-    if (Local.Y<=Passage->Size.Y*.5f) return false;
-    bPassageCleared = true;
-    Passage->Open();
-    StatusMessage = TEXT("The lower-right gatekeeper opened the gate for his banana! The crate route stays open.");
-    UE_LOG(LogTemp,Display,TEXT("JUNGLE GATE OPENED: keeper=%s banana=%s"),*Wild->GetActorLocation().ToString(),*Banana->GetActorLocation().ToString());
-    return true;
+    if (Local.Y>=-Passage->Size.Y*.5f) return false;
+    if (auto* Door = Cast<ABDJungleDoor>(Passage)) Door->BeginOpening();
+    else { Passage->Open(); bPassageCleared=true; }
+    StatusMessage = TEXT("The keeper unlocks the golden lock and pushes the door open.");
+    return Passage->bOpen;
 }
 void ABDJungleGameMode::OnSlideEnded(ABDJungleCharacter* Player)
 {
@@ -447,32 +571,18 @@ void ABDJungleGameMode::Tick(float DeltaSeconds)
     Super::Tick(DeltaSeconds);
     if (!bViewSet)
         if (auto* PC = Cast<ABDPlayerController>(UGameplayStatics::GetPlayerController(this,0)))
-        { PC->SetPlaygroundView(FVector(0,0,40),2800.f,2460.f); bViewSet=true; }
+        { PC->SetPlaygroundView(FVector(0,0,40),2200.f,1550.f); bViewSet=true; }
     if (bCompleted || !Settings || !JungleIsPlaying(GetWorld())) return;
-    if (IsValid(ActiveBomb) && ActiveBomb->IsHeld()) PrepareBomb(ActiveBomb,ActiveBomb->GetHolder());
-    if (IsValid(ActiveBomb) && ActiveBomb->IsRestingBanana())
+    bPassageCleared = Passage && Passage->bOpen;
+    for (TActorIterator<ABDBomb> Food(GetWorld()); Food; ++Food)
     {
-        const FVector Position = ActiveBomb->GetActorLocation();
+        if (!Food->IsRestingBanana()) continue;
+        const FVector Position = Food->GetActorLocation();
         for (TActorIterator<ABDWildMan> It(GetWorld()); It; ++It)
-            if (FVector::Dist2D(Position,It->GetActorLocation())<=Settings->BananaAttractionRange)
-                It->AttractBanana(ActiveBomb);
+            if ((!bPassageCleared && WantsGateAccess(*It,*Food)) ||
+                (bPassageCleared && FVector::Dist2D(Position,It->GetActorLocation())<=Settings->BananaAttractionRange))
+                It->AttractBanana(*Food);
     }
-    if (Crate && Checkpoints.IsValidIndex(CheckpointIndex+1) && Crate->Mesh->GetPhysicsLinearVelocity().Size2D()<15.f &&
-        FVector::Dist2D(Crate->GetActorLocation(),Checkpoints[CheckpointIndex+1])<200.f)
-    { ++CheckpointIndex; CrateCheckpoint=Crate->GetActorTransform(); }
-    const float Now = GetWorld()->GetTimeSeconds();
-    if (Now<NextSpawn) return;
-    NextSpawn = Now+FMath::FRandRange(FMath::Max(1.f,Settings->SpawnIntervalMin),FMath::Max(Settings->SpawnIntervalMin,Settings->SpawnIntervalMax));
-    if (!bPassageCleared || CountWildMen()>=Settings->MaxWildMen || Settings->SpawnPoints.IsEmpty()) return;
-    const auto* Player = UGameplayStatics::GetPlayerPawn(this,0);
-    const FVector Point = Settings->SpawnPoints[FMath::RandRange(0,Settings->SpawnPoints.Num()-1)];
-    if ((Player && FVector::Dist2D(Point,Player->GetActorLocation())<550.f) || (Crate && FVector::Dist2D(Point,Crate->GetActorLocation())<450.f)) return;
-    FNavLocation Nav;
-    auto* Navigation = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld());
-    if (!Navigation || !Navigation->ProjectPointToNavigation(Point,Nav,FVector(100,100,200))) return;
-    const float HalfHeight = GetDefault<ABDWildMan>()->GetCapsuleComponent()->GetUnscaledCapsuleHalfHeight();
-    auto* Wild = GetWorld()->SpawnActor<ABDWildMan>(Nav.Location+FVector(0,0,HalfHeight+2.f),FRotator::ZeroRotator);
-    if (Wild) Wild->SetLifeSpan(50.f);
 }
 void ABDJungleGameMode::RestartTutorial()
 {
@@ -480,6 +590,12 @@ void ABDJungleGameMode::RestartTutorial()
     UGameplayStatics::SetGamePaused(this,false);
     // Carried meals have already left ActiveBomb, but retry must clear them too.
     for (TActorIterator<ABDBomb> It(GetWorld()); It; ++It) It->Destroy();
+    for (TActorIterator<ABDBananaTree> It(GetWorld()); It; ++It) It->ResetFruit();
+    for (TActorIterator<ABDBananaPeel> It(GetWorld()); It; ++It) It->ResetPeel();
+    for (TActorIterator<ABDJungleSkidMark> It(GetWorld()); It; ++It) It->Destroy();
+    for (TActorIterator<ABDWildMan> It(GetWorld()); It; ++It) It->ResetPuzzle();
+    if (auto* Door = Cast<ABDJungleDoor>(Passage)) Door->ResetDoor();
+    bPassageCleared=false;
     if (Crate)
     {
         Crate->Mesh->SetPhysicsLinearVelocity(FVector::ZeroVector);
@@ -487,7 +603,7 @@ void ABDJungleGameMode::RestartTutorial()
         Crate->SetActorTransform(CrateCheckpoint,false,nullptr,ETeleportType::TeleportPhysics);
     }
     if (auto* Player = Cast<ABDJungleCharacter>(UGameplayStatics::GetPlayerPawn(this,0))) Player->Respawn();
-    StatusMessage = TEXT("Retry from the last safe crate corner. The opened passage stays open.");
+    StatusMessage = TEXT("Bomb a fruit tree. Push a banana to the golden lock, then deliver the package.");
 }
 
 void ABDJungleHUD::DrawHUD()
@@ -507,14 +623,14 @@ void ABDJungleHUD::DrawHUD()
     const auto* Player=Cast<ABDJungleCharacter>(GetOwningPlayerController()->GetPawn());
     const auto* Zone=Player?Mode->ZoneAt(Player->GetActorLocation()):nullptr;
     DrawRect(Panel,0,Canvas->SizeY-74*S,Canvas->SizeX,74*S);
-    FString State=Zone?FString::Printf(TEXT("ZONE %s: BANANA ONLY  /  scent distracts, no crate force"),*Zone->ZoneId.ToString()):TEXT("REGULAR BOMBS  /  explosions move the crate");
-    if (Player && Player->IsSliding()) State=TEXT("SLIDING  /  direction locked until five tiles or a wall; then movement returns");
+    FString State=TEXT("Bomb a banana tree, then push its fruit to the golden lock.");
+    if (Player && Player->IsSliding()) State=TEXT("Whoops! Getting back up...");
     if (Mode->ActiveBomb)
         State+=Mode->ActiveBomb->IsBanana() ? (Mode->ActiveBomb->IsHeld()?TEXT("    BANANA HELD"):TEXT("    FREE BANANA: WAIT FOR PICKUP")) :
             FString::Printf(TEXT("    REGULAR FUSE %.1fs"),Mode->ActiveBomb->GetRemainingFuse());
     else State+=TEXT("    BOMB SLOT READY");
     Text(State,20*S,Canvas->SizeY-65*S,.67f,Yellow);
-    Text(TEXT("WASD move   Mouse aim   Hold LMB charge / release throw   R retry checkpoint   Esc pause"),20*S,Canvas->SizeY-34*S,.61f,Ink);
+    Text(TEXT("WASD move   Mouse aim   Hold LMB charge / release throw   R restart   Esc pause"),20*S,Canvas->SizeY-34*S,.61f,Ink);
     auto Label=[&](FVector P,const FString& T,const FLinearColor& C)
     {
         FVector2D Screen;
